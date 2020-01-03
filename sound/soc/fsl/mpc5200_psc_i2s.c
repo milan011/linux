@@ -1,10 +1,10 @@
-/*
- * Freescale MPC5200 PSC in I2S mode
- * ALSA SoC Digital Audio Interface (DAI) driver
- *
- * Copyright (C) 2008 Secret Lab Technologies Ltd.
- * Copyright (C) 2009 Jon Smirl, Digispeaker
- */
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// Freescale MPC5200 PSC in I2S mode
+// ALSA SoC Digital Audio Interface (DAI) driver
+//
+// Copyright (C) 2008 Secret Lab Technologies Ltd.
+// Copyright (C) 2009 Jon Smirl, Digispeaker
 
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -217,7 +217,7 @@ static int psc_i2s_of_remove(struct platform_device *op)
 }
 
 /* Match table for of_platform binding */
-static struct of_device_id psc_i2s_match[] = {
+static const struct of_device_id psc_i2s_match[] = {
 	{ .compatible = "fsl,mpc5200-psc-i2s", },
 	{ .compatible = "fsl,mpc5200b-psc-i2s", },
 	{}

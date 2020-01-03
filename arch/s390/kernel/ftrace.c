@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Dynamic function tracer architecture backend.
  *
@@ -17,6 +18,7 @@
 #include <trace/syscall.h>
 #include <asm/asm-offsets.h>
 #include <asm/cacheflush.h>
+#include <asm/set_memory.h>
 #include "entry.h"
 
 /*
@@ -57,6 +59,44 @@
 
 unsigned long ftrace_plt;
 
+static inline void ftrace_generate_orig_insn(struct ftrace_insn *insn)
+{
+#if defined(CC_USING_HOTPATCH) || defined(CC_USING_NOP_MCOUNT)
+	/* brcl 0,0 */
+	insn->opc = 0xc004;
+	insn->disp = 0;
+#else
+	/* stg r14,8(r15) */
+	insn->opc = 0xe3e0;
+	insn->disp = 0xf0080024;
+#endif
+}
+
+static inline int is_kprobe_on_ftrace(struct ftrace_insn *insn)
+{
+#ifdef CONFIG_KPROBES
+	if (insn->opc == BREAKPOINT_INSTRUCTION)
+		return 1;
+#endif
+	return 0;
+}
+
+static inline void ftrace_generate_kprobe_nop_insn(struct ftrace_insn *insn)
+{
+#ifdef CONFIG_KPROBES
+	insn->opc = BREAKPOINT_INSTRUCTION;
+	insn->disp = KPROBE_ON_FTRACE_NOP;
+#endif
+}
+
+static inline void ftrace_generate_kprobe_call_insn(struct ftrace_insn *insn)
+{
+#ifdef CONFIG_KPROBES
+	insn->opc = BREAKPOINT_INSTRUCTION;
+	insn->disp = KPROBE_ON_FTRACE_CALL;
+#endif
+}
+
 int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
 		       unsigned long addr)
 {
@@ -72,16 +112,9 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 		return -EFAULT;
 	if (addr == MCOUNT_ADDR) {
 		/* Initial code replacement */
-#ifdef CC_USING_HOTPATCH
-		/* We expect to see brcl 0,0 */
-		ftrace_generate_nop_insn(&orig);
-#else
-		/* We expect to see stg r14,8(r15) */
-		orig.opc = 0xe3e0;
-		orig.disp = 0xf0080024;
-#endif
+		ftrace_generate_orig_insn(&orig);
 		ftrace_generate_nop_insn(&new);
-	} else if (old.opc == BREAKPOINT_INSTRUCTION) {
+	} else if (is_kprobe_on_ftrace(&old)) {
 		/*
 		 * If we find a breakpoint instruction, a kprobe has been
 		 * placed at the beginning of the function. We write the
@@ -89,9 +122,8 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 		 * bytes of the original instruction so that the kprobes
 		 * handler can execute a nop, if it reaches this breakpoint.
 		 */
-		new.opc = orig.opc = BREAKPOINT_INSTRUCTION;
-		orig.disp = KPROBE_ON_FTRACE_CALL;
-		new.disp = KPROBE_ON_FTRACE_NOP;
+		ftrace_generate_kprobe_call_insn(&orig);
+		ftrace_generate_kprobe_nop_insn(&new);
 	} else {
 		/* Replace ftrace call with a nop. */
 		ftrace_generate_call_insn(&orig, rec->ip);
@@ -100,8 +132,7 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 	/* Verify that the to be replaced code matches what we expect. */
 	if (memcmp(&orig, &old, sizeof(old)))
 		return -EINVAL;
-	if (probe_kernel_write((void *) rec->ip, &new, sizeof(new)))
-		return -EPERM;
+	s390_kernel_write((void *) rec->ip, &new, sizeof(new));
 	return 0;
 }
 
@@ -111,7 +142,7 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 
 	if (probe_kernel_read(&old, (void *) rec->ip, sizeof(old)))
 		return -EFAULT;
-	if (old.opc == BREAKPOINT_INSTRUCTION) {
+	if (is_kprobe_on_ftrace(&old)) {
 		/*
 		 * If we find a breakpoint instruction, a kprobe has been
 		 * placed at the beginning of the function. We write the
@@ -119,9 +150,8 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 		 * bytes of the original instruction so that the kprobes
 		 * handler can execute a brasl if it reaches this breakpoint.
 		 */
-		new.opc = orig.opc = BREAKPOINT_INSTRUCTION;
-		orig.disp = KPROBE_ON_FTRACE_NOP;
-		new.disp = KPROBE_ON_FTRACE_CALL;
+		ftrace_generate_kprobe_nop_insn(&orig);
+		ftrace_generate_kprobe_call_insn(&new);
 	} else {
 		/* Replace nop with an ftrace call. */
 		ftrace_generate_nop_insn(&orig);
@@ -130,8 +160,7 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	/* Verify that the to be replaced code matches what we expect. */
 	if (memcmp(&orig, &old, sizeof(old)))
 		return -EINVAL;
-	if (probe_kernel_write((void *) rec->ip, &new, sizeof(new)))
-		return -EPERM;
+	s390_kernel_write((void *) rec->ip, &new, sizeof(new));
 	return 0;
 }
 
@@ -144,6 +173,8 @@ int __init ftrace_dyn_arch_init(void)
 {
 	return 0;
 }
+
+#ifdef CONFIG_MODULES
 
 static int __init ftrace_plt_init(void)
 {
@@ -163,30 +194,25 @@ static int __init ftrace_plt_init(void)
 }
 device_initcall(ftrace_plt_init);
 
+#endif /* CONFIG_MODULES */
+
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 /*
  * Hook the return address and push it in the stack of return addresses
  * in current thread info.
  */
-unsigned long prepare_ftrace_return(unsigned long parent, unsigned long ip)
+unsigned long prepare_ftrace_return(unsigned long ra, unsigned long sp,
+				    unsigned long ip)
 {
-	struct ftrace_graph_ent trace;
-
 	if (unlikely(ftrace_graph_is_dead()))
 		goto out;
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
 		goto out;
-	ip = (ip & PSW_ADDR_INSN) - MCOUNT_INSN_SIZE;
-	trace.func = ip;
-	trace.depth = current->curr_ret_stack + 1;
-	/* Only trace if the calling function expects to. */
-	if (!ftrace_graph_entry(&trace))
-		goto out;
-	if (ftrace_push_return_trace(parent, ip, &trace.depth, 0) == -EBUSY)
-		goto out;
-	parent = (unsigned long) return_to_handler;
+	ip -= MCOUNT_INSN_SIZE;
+	if (!function_graph_enter(ra, ip, 0, (void *) sp))
+		ra = (unsigned long) return_to_handler;
 out:
-	return parent;
+	return ra;
 }
 NOKPROBE_SYMBOL(prepare_ftrace_return);
 
@@ -202,14 +228,16 @@ int ftrace_enable_ftrace_graph_caller(void)
 {
 	u8 op = 0x04; /* set mask field to zero */
 
-	return probe_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	s390_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	return 0;
 }
 
 int ftrace_disable_ftrace_graph_caller(void)
 {
 	u8 op = 0xf4; /* set mask field to all ones */
 
-	return probe_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	s390_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	return 0;
 }
 
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */

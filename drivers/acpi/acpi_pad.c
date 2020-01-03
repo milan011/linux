@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * acpi_pad.c ACPI Processor Aggregator Driver
  *
  * Copyright (c) 2009, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #include <linux/kernel.h>
@@ -24,12 +11,14 @@
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/kthread.h>
+#include <uapi/linux/sched/types.h>
 #include <linux/freezer.h>
 #include <linux/cpu.h>
-#include <linux/clockchips.h>
+#include <linux/tick.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <asm/mwait.h>
+#include <xen/xen.h>
 
 #define ACPI_PROCESSOR_AGGREGATOR_CLASS	"acpi_pad"
 #define ACPI_PROCESSOR_AGGREGATOR_DEVICE_NAME "Processor Aggregator"
@@ -41,8 +30,6 @@ static unsigned long power_saving_mwait_eax;
 
 static unsigned char tsc_detected_unstable;
 static unsigned char tsc_marked_unstable;
-static unsigned char lapic_detected_unstable;
-static unsigned char lapic_marked_unstable;
 
 static void power_saving_mwait_init(void)
 {
@@ -74,21 +61,20 @@ static void power_saving_mwait_init(void)
 
 #if defined(CONFIG_X86)
 	switch (boot_cpu_data.x86_vendor) {
+	case X86_VENDOR_HYGON:
 	case X86_VENDOR_AMD:
 	case X86_VENDOR_INTEL:
+	case X86_VENDOR_ZHAOXIN:
 		/*
 		 * AMD Fam10h TSC will tick in all
 		 * C/P/S0/S1 states when this bit is set.
 		 */
 		if (!boot_cpu_has(X86_FEATURE_NONSTOP_TSC))
 			tsc_detected_unstable = 1;
-		if (!boot_cpu_has(X86_FEATURE_ARAT))
-			lapic_detected_unstable = 1;
 		break;
 	default:
-		/* TSC & LAPIC could halt in idle */
+		/* TSC could halt in idle */
 		tsc_detected_unstable = 1;
-		lapic_detected_unstable = 1;
 	}
 #endif
 }
@@ -110,13 +96,14 @@ static void round_robin_cpu(unsigned int tsk_index)
 	mutex_lock(&round_robin_lock);
 	cpumask_clear(tmp);
 	for_each_cpu(cpu, pad_busy_cpus)
-		cpumask_or(tmp, tmp, topology_thread_cpumask(cpu));
+		cpumask_or(tmp, tmp, topology_sibling_cpumask(cpu));
 	cpumask_andnot(tmp, cpu_online_mask, tmp);
 	/* avoid HT sibilings if possible */
 	if (cpumask_empty(tmp))
 		cpumask_andnot(tmp, cpu_online_mask, pad_busy_cpus);
 	if (cpumask_empty(tmp)) {
 		mutex_unlock(&round_robin_lock);
+		free_cpumask_var(tmp);
 		return;
 	}
 	for_each_cpu(cpu, tmp) {
@@ -134,6 +121,8 @@ static void round_robin_cpu(unsigned int tsk_index)
 	mutex_unlock(&round_robin_lock);
 
 	set_cpus_allowed_ptr(current, cpumask_of(preferred_cpu));
+
+	free_cpumask_var(tmp);
 }
 
 static void exit_round_robin(unsigned int tsk_index)
@@ -155,10 +144,7 @@ static int power_saving_thread(void *data)
 	sched_setscheduler(current, SCHED_RR, &param);
 
 	while (!kthread_should_stop()) {
-		int cpu;
 		unsigned long expire_time;
-
-		try_to_freeze();
 
 		/* round robin to cpus */
 		expire_time = last_jiffies + round_robin_time * HZ;
@@ -177,28 +163,15 @@ static int power_saving_thread(void *data)
 				mark_tsc_unstable("TSC halts in idle");
 				tsc_marked_unstable = 1;
 			}
-			if (lapic_detected_unstable && !lapic_marked_unstable) {
-				int i;
-				/* LAPIC could halt in idle, so notify users */
-				for_each_online_cpu(i)
-					clockevents_notify(
-						CLOCK_EVT_NOTIFY_BROADCAST_ON,
-						&i);
-				lapic_marked_unstable = 1;
-			}
 			local_irq_disable();
-			cpu = smp_processor_id();
-			if (lapic_marked_unstable)
-				clockevents_notify(
-					CLOCK_EVT_NOTIFY_BROADCAST_ENTER, &cpu);
+			tick_broadcast_enable();
+			tick_broadcast_enter();
 			stop_critical_timings();
 
 			mwait_idle_with_hints(power_saving_mwait_eax, 1);
 
 			start_critical_timings();
-			if (lapic_marked_unstable)
-				clockevents_notify(
-					CLOCK_EVT_NOTIFY_BROADCAST_EXIT, &cpu);
+			tick_broadcast_exit();
 			local_irq_enable();
 
 			if (time_before(expire_time, jiffies)) {
@@ -502,6 +475,10 @@ static struct acpi_driver acpi_pad_driver = {
 
 static int __init acpi_pad_init(void)
 {
+	/* Xen ACPI PAD is used when running as Xen Dom0. */
+	if (xen_initial_domain())
+		return -ENODEV;
+
 	power_saving_mwait_init();
 	if (power_saving_mwait_eax == 0)
 		return -EINVAL;

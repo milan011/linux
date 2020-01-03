@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Edirol UA-101/UA-1000 driver
  * Copyright (c) Clemens Ladisch <clemens@ladisch.de>
- *
- * This driver is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2.
- *
- * This driver is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this driver.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/init.h>
@@ -743,8 +733,8 @@ static int capture_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (err < 0)
 		return err;
 
-	return snd_pcm_lib_alloc_vmalloc_buffer(substream,
-						params_buffer_bytes(hw_params));
+	return snd_pcm_lib_malloc_pages(substream,
+					params_buffer_bytes(hw_params));
 }
 
 static int playback_pcm_hw_params(struct snd_pcm_substream *substream,
@@ -761,13 +751,13 @@ static int playback_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (err < 0)
 		return err;
 
-	return snd_pcm_lib_alloc_vmalloc_buffer(substream,
-						params_buffer_bytes(hw_params));
+	return snd_pcm_lib_malloc_pages(substream,
+					params_buffer_bytes(hw_params));
 }
 
 static int ua101_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	return snd_pcm_lib_free_vmalloc_buffer(substream);
+	return snd_pcm_lib_free_pages(substream);
 }
 
 static int capture_pcm_prepare(struct snd_pcm_substream *substream)
@@ -890,7 +880,7 @@ static snd_pcm_uframes_t playback_pcm_pointer(struct snd_pcm_substream *subs)
 	return ua101_pcm_pointer(ua, &ua->playback);
 }
 
-static struct snd_pcm_ops capture_pcm_ops = {
+static const struct snd_pcm_ops capture_pcm_ops = {
 	.open = capture_pcm_open,
 	.close = capture_pcm_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -899,11 +889,9 @@ static struct snd_pcm_ops capture_pcm_ops = {
 	.prepare = capture_pcm_prepare,
 	.trigger = capture_pcm_trigger,
 	.pointer = capture_pcm_pointer,
-	.page = snd_pcm_lib_get_vmalloc_page,
-	.mmap = snd_pcm_lib_mmap_vmalloc,
 };
 
-static struct snd_pcm_ops playback_pcm_ops = {
+static const struct snd_pcm_ops playback_pcm_ops = {
 	.open = playback_pcm_open,
 	.close = playback_pcm_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -912,8 +900,6 @@ static struct snd_pcm_ops playback_pcm_ops = {
 	.prepare = playback_pcm_prepare,
 	.trigger = playback_pcm_trigger,
 	.pointer = playback_pcm_pointer,
-	.page = snd_pcm_lib_get_vmalloc_page,
-	.mmap = snd_pcm_lib_mmap_vmalloc,
 };
 
 static const struct uac_format_type_i_discrete_descriptor *
@@ -1037,7 +1023,7 @@ static int detect_usb_format(struct ua101 *ua)
 		return -ENXIO;
 	}
 	ua->capture.usb_pipe = usb_rcvisocpipe(ua->dev, usb_endpoint_num(epd));
-	ua->capture.max_packet_bytes = le16_to_cpu(epd->wMaxPacketSize);
+	ua->capture.max_packet_bytes = usb_endpoint_maxp(epd);
 
 	epd = &ua->intf[INTF_PLAYBACK]->altsetting[1].endpoint[0].desc;
 	if (!usb_endpoint_is_isoc_out(epd)) {
@@ -1045,7 +1031,7 @@ static int detect_usb_format(struct ua101 *ua)
 		return -ENXIO;
 	}
 	ua->playback.usb_pipe = usb_sndisocpipe(ua->dev, usb_endpoint_num(epd));
-	ua->playback.max_packet_bytes = le16_to_cpu(epd->wMaxPacketSize);
+	ua->playback.max_packet_bytes = usb_endpoint_maxp(epd);
 	return 0;
 }
 
@@ -1308,6 +1294,8 @@ static int ua101_probe(struct usb_interface *interface,
 	strcpy(ua->pcm->name, name);
 	snd_pcm_set_ops(ua->pcm, SNDRV_PCM_STREAM_PLAYBACK, &playback_pcm_ops);
 	snd_pcm_set_ops(ua->pcm, SNDRV_PCM_STREAM_CAPTURE, &capture_pcm_ops);
+	snd_pcm_lib_preallocate_pages_for_all(ua->pcm, SNDRV_DMA_TYPE_VMALLOC,
+					      NULL, 0, 0);
 
 	err = snd_usbmidi_create(card, ua->intf[INTF_MIDI],
 				 &ua->midi_list, &midi_quirk);
@@ -1366,7 +1354,7 @@ static void ua101_disconnect(struct usb_interface *interface)
 	mutex_unlock(&devices_mutex);
 }
 
-static struct usb_device_id ua101_ids[] = {
+static const struct usb_device_id ua101_ids[] = {
 	{ USB_DEVICE(0x0582, 0x0044) }, /* UA-1000 high speed */
 	{ USB_DEVICE(0x0582, 0x007d) }, /* UA-101 high speed */
 	{ USB_DEVICE(0x0582, 0x008d) }, /* UA-101 full speed */

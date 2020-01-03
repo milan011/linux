@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * HID Sensors Driver
  * Copyright (c) 2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.
- *
  */
 #include <linux/device.h>
 #include <linux/platform_device.h>
@@ -43,8 +31,6 @@ struct prox_state {
 static const struct iio_chan_spec prox_channels[] = {
 	{
 		.type = IIO_PROXIMITY,
-		.modified = 1,
-		.channel2 = IIO_NO_MOD,
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_OFFSET) |
 		BIT(IIO_CHAN_INFO_SCALE) |
@@ -75,6 +61,7 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 	int report_id = -1;
 	u32 address;
 	int ret_type;
+	s32 min;
 
 	*val = 0;
 	*val2 = 0;
@@ -83,8 +70,8 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 		switch (chan->scan_index) {
 		case  CHANNEL_SCAN_INDEX_PRESENCE:
 			report_id = prox_state->prox_attr.report_id;
-			address =
-			HID_USAGE_SENSOR_HUMAN_PRESENCE;
+			min = prox_state->prox_attr.logical_minimum;
+			address = HID_USAGE_SENSOR_HUMAN_PRESENCE;
 			break;
 		default:
 			report_id = -1;
@@ -96,7 +83,9 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 			*val = sensor_hub_input_attr_get_raw_value(
 				prox_state->common_attributes.hsdev,
 				HID_USAGE_SENSOR_PROX, address,
-				report_id);
+				report_id,
+				SENSOR_HUB_SYNC,
+				min < 0);
 			hid_sensor_power_state(&prox_state->common_attributes,
 						false);
 		} else {
@@ -157,7 +146,6 @@ static int prox_write_raw(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info prox_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &prox_read_raw,
 	.write_raw = &prox_write_raw,
 };
@@ -241,6 +229,13 @@ static int prox_parse_report(struct platform_device *pdev,
 			st->common_attributes.sensitivity.index,
 			st->common_attributes.sensitivity.report_id);
 	}
+	if (st->common_attributes.sensitivity.index < 0)
+		sensor_hub_input_get_attribute_info(hsdev,
+			HID_FEATURE_REPORT, usage_id,
+			HID_USAGE_SENSOR_DATA_MOD_CHANGE_SENSITIVITY_ABS |
+			HID_USAGE_SENSOR_HUMAN_PRESENCE,
+			&st->common_attributes.sensitivity);
+
 	return ret;
 }
 
@@ -252,7 +247,6 @@ static int hid_prox_probe(struct platform_device *pdev)
 	struct iio_dev *indio_dev;
 	struct prox_state *prox_state;
 	struct hid_sensor_hub_device *hsdev = pdev->dev.platform_data;
-	struct iio_chan_spec *channels;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev,
 				sizeof(struct prox_state));
@@ -271,22 +265,22 @@ static int hid_prox_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	channels = kmemdup(prox_channels, sizeof(prox_channels), GFP_KERNEL);
-	if (!channels) {
+	indio_dev->channels = kmemdup(prox_channels, sizeof(prox_channels),
+				      GFP_KERNEL);
+	if (!indio_dev->channels) {
 		dev_err(&pdev->dev, "failed to duplicate channels\n");
 		return -ENOMEM;
 	}
 
-	ret = prox_parse_report(pdev, hsdev, channels,
+	ret = prox_parse_report(pdev, hsdev,
+				(struct iio_chan_spec *)indio_dev->channels,
 				HID_USAGE_SENSOR_PROX, prox_state);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to setup attributes\n");
 		goto error_free_dev_mem;
 	}
 
-	indio_dev->channels = channels;
-	indio_dev->num_channels =
-				ARRAY_SIZE(prox_channels);
+	indio_dev->num_channels = ARRAY_SIZE(prox_channels);
 	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->info = &prox_info;
 	indio_dev->name = name;
@@ -351,7 +345,7 @@ static int hid_prox_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_device_id hid_prox_ids[] = {
+static const struct platform_device_id hid_prox_ids[] = {
 	{
 		/* Format: HID-SENSOR-usage_id_in_hex_lowercase */
 		.name = "HID-SENSOR-200011",

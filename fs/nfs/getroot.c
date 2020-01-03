@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* getroot.c: get the root dentry for an NFS mount
  *
  * Copyright (C) 2006 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -30,7 +26,7 @@
 #include <linux/namei.h>
 #include <linux/security.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "internal.h"
 
@@ -56,11 +52,11 @@ static int nfs_superblock_set_dummy_root(struct super_block *sb, struct inode *i
 		 * This again causes shrink_dcache_for_umount_subtree() to
 		 * Oops, since the test for IS_ROOT() will fail.
 		 */
-		spin_lock(&sb->s_root->d_inode->i_lock);
+		spin_lock(&d_inode(sb->s_root)->i_lock);
 		spin_lock(&sb->s_root->d_lock);
 		hlist_del_init(&sb->s_root->d_u.d_alias);
 		spin_unlock(&sb->s_root->d_lock);
-		spin_unlock(&sb->s_root->d_inode->i_lock);
+		spin_unlock(&d_inode(sb->s_root)->i_lock);
 	}
 	return 0;
 }

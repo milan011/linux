@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SH RSPI driver
  *
@@ -6,15 +7,6 @@
  *
  * Based on spi-sh.c:
  * Copyright (C) 2011 Renesas Solutions Corp.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -177,11 +169,18 @@
 #define SPBFCR_RXRST		0x40	/* Receive Buffer Data Reset */
 #define SPBFCR_TXTRG_MASK	0x30	/* Transmit Buffer Data Triggering Number */
 #define SPBFCR_RXTRG_MASK	0x07	/* Receive Buffer Data Triggering Number */
+/* QSPI on R-Car Gen2 */
+#define SPBFCR_TXTRG_1B		0x00	/* 31 bytes (1 byte available) */
+#define SPBFCR_TXTRG_32B	0x30	/* 0 byte (32 bytes available) */
+#define SPBFCR_RXTRG_1B		0x00	/* 1 byte (31 bytes available) */
+#define SPBFCR_RXTRG_32B	0x07	/* 32 bytes (0 byte available) */
+
+#define QSPI_BUFFER_SIZE        32u
 
 struct rspi_data {
 	void __iomem *addr;
 	u32 max_speed_hz;
-	struct spi_master *master;
+	struct spi_controller *ctlr;
 	wait_queue_head_t wait;
 	struct clk *clk;
 	u16 spcmd;
@@ -238,8 +237,8 @@ static u16 rspi_read_data(const struct rspi_data *rspi)
 /* optional functions */
 struct spi_ops {
 	int (*set_config_register)(struct rspi_data *rspi, int access_size);
-	int (*transfer_one)(struct spi_master *master, struct spi_device *spi,
-			    struct spi_transfer *xfer);
+	int (*transfer_one)(struct spi_controller *ctlr,
+			    struct spi_device *spi, struct spi_transfer *xfer);
 	u16 mode_bits;
 	u16 flags;
 	u16 fifo_size;
@@ -272,7 +271,8 @@ static int rspi_set_config_register(struct rspi_data *rspi, int access_size)
 	/* Sets parity, interrupt mask */
 	rspi_write8(rspi, 0x00, RSPI_SPCR2);
 
-	/* Sets SPCMD */
+	/* Resets sequencer */
+	rspi_write8(rspi, 0, RSPI_SPSCR);
 	rspi->spcmd |= SPCMD_SPB_8_TO_16(access_size);
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
@@ -288,14 +288,24 @@ static int rspi_set_config_register(struct rspi_data *rspi, int access_size)
 static int rspi_rz_set_config_register(struct rspi_data *rspi, int access_size)
 {
 	int spbr;
+	int div = 0;
+	unsigned long clksrc;
 
 	/* Sets output mode, MOSI signal, and (optionally) loopback */
 	rspi_write8(rspi, rspi->sppcr, RSPI_SPPCR);
 
+	clksrc = clk_get_rate(rspi->clk);
+	while (div < 3) {
+		if (rspi->max_speed_hz >= clksrc/4) /* 4=(CLK/2)/2 */
+			break;
+		div++;
+		clksrc /= 2;
+	}
+
 	/* Sets transfer bit rate */
-	spbr = DIV_ROUND_UP(clk_get_rate(rspi->clk),
-			    2 * rspi->max_speed_hz) - 1;
+	spbr = DIV_ROUND_UP(clksrc, 2 * rspi->max_speed_hz) - 1;
 	rspi_write8(rspi, clamp(spbr, 0, 255), RSPI_SPBR);
+	rspi->spcmd |= div << 2;
 
 	/* Disable dummy transmission, set byte access */
 	rspi_write8(rspi, SPDCR_SPLBYTE, RSPI_SPDCR);
@@ -306,7 +316,8 @@ static int rspi_rz_set_config_register(struct rspi_data *rspi, int access_size)
 	rspi_write8(rspi, 0x00, RSPI_SSLND);
 	rspi_write8(rspi, 0x00, RSPI_SPND);
 
-	/* Sets SPCMD */
+	/* Resets sequencer */
+	rspi_write8(rspi, 0, RSPI_SPSCR);
 	rspi->spcmd |= SPCMD_SPB_8_TO_16(access_size);
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
@@ -357,13 +368,62 @@ static int qspi_set_config_register(struct rspi_data *rspi, int access_size)
 	/* Sets buffer to allow normal operation */
 	rspi_write8(rspi, 0x00, QSPI_SPBFCR);
 
-	/* Sets SPCMD */
+	/* Resets sequencer */
+	rspi_write8(rspi, 0, RSPI_SPSCR);
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
-	/* Enables SPI function in master mode */
-	rspi_write8(rspi, SPCR_SPE | SPCR_MSTR, RSPI_SPCR);
+	/* Sets RSPI mode */
+	rspi_write8(rspi, SPCR_MSTR, RSPI_SPCR);
 
 	return 0;
+}
+
+static void qspi_update(const struct rspi_data *rspi, u8 mask, u8 val, u8 reg)
+{
+	u8 data;
+
+	data = rspi_read8(rspi, reg);
+	data &= ~mask;
+	data |= (val & mask);
+	rspi_write8(rspi, data, reg);
+}
+
+static unsigned int qspi_set_send_trigger(struct rspi_data *rspi,
+					  unsigned int len)
+{
+	unsigned int n;
+
+	n = min(len, QSPI_BUFFER_SIZE);
+
+	if (len >= QSPI_BUFFER_SIZE) {
+		/* sets triggering number to 32 bytes */
+		qspi_update(rspi, SPBFCR_TXTRG_MASK,
+			     SPBFCR_TXTRG_32B, QSPI_SPBFCR);
+	} else {
+		/* sets triggering number to 1 byte */
+		qspi_update(rspi, SPBFCR_TXTRG_MASK,
+			     SPBFCR_TXTRG_1B, QSPI_SPBFCR);
+	}
+
+	return n;
+}
+
+static int qspi_set_receive_trigger(struct rspi_data *rspi, unsigned int len)
+{
+	unsigned int n;
+
+	n = min(len, QSPI_BUFFER_SIZE);
+
+	if (len >= QSPI_BUFFER_SIZE) {
+		/* sets triggering number to 32 bytes */
+		qspi_update(rspi, SPBFCR_RXTRG_MASK,
+			     SPBFCR_RXTRG_32B, QSPI_SPBFCR);
+	} else {
+		/* sets triggering number to 1 byte */
+		qspi_update(rspi, SPBFCR_RXTRG_MASK,
+			     SPBFCR_RXTRG_1B, QSPI_SPBFCR);
+	}
+	return n;
 }
 
 #define set_config_register(spi, n) spi->ops->set_config_register(spi, n)
@@ -409,7 +469,7 @@ static int rspi_data_out(struct rspi_data *rspi, u8 data)
 {
 	int error = rspi_wait_for_tx_empty(rspi);
 	if (error < 0) {
-		dev_err(&rspi->master->dev, "transmit timeout\n");
+		dev_err(&rspi->ctlr->dev, "transmit timeout\n");
 		return error;
 	}
 	rspi_write_data(rspi, data);
@@ -423,7 +483,7 @@ static int rspi_data_in(struct rspi_data *rspi)
 
 	error = rspi_wait_for_rx_full(rspi);
 	if (error < 0) {
-		dev_err(&rspi->master->dev, "receive timeout\n");
+		dev_err(&rspi->ctlr->dev, "receive timeout\n");
 		return error;
 	}
 	data = rspi_read_data(rspi);
@@ -469,8 +529,8 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 
 	/* First prepare and submit the DMA request(s), as this may fail */
 	if (rx) {
-		desc_rx = dmaengine_prep_slave_sg(rspi->master->dma_rx,
-					rx->sgl, rx->nents, DMA_FROM_DEVICE,
+		desc_rx = dmaengine_prep_slave_sg(rspi->ctlr->dma_rx, rx->sgl,
+					rx->nents, DMA_DEV_TO_MEM,
 					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 		if (!desc_rx) {
 			ret = -EAGAIN;
@@ -489,8 +549,8 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 	}
 
 	if (tx) {
-		desc_tx = dmaengine_prep_slave_sg(rspi->master->dma_tx,
-					tx->sgl, tx->nents, DMA_TO_DEVICE,
+		desc_tx = dmaengine_prep_slave_sg(rspi->ctlr->dma_tx, tx->sgl,
+					tx->nents, DMA_MEM_TO_DEV,
 					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 		if (!desc_tx) {
 			ret = -EAGAIN;
@@ -527,21 +587,23 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 
 	/* Now start DMA */
 	if (rx)
-		dma_async_issue_pending(rspi->master->dma_rx);
+		dma_async_issue_pending(rspi->ctlr->dma_rx);
 	if (tx)
-		dma_async_issue_pending(rspi->master->dma_tx);
+		dma_async_issue_pending(rspi->ctlr->dma_tx);
 
 	ret = wait_event_interruptible_timeout(rspi->wait,
 					       rspi->dma_callbacked, HZ);
-	if (ret > 0 && rspi->dma_callbacked)
+	if (ret > 0 && rspi->dma_callbacked) {
 		ret = 0;
-	else if (!ret) {
-		dev_err(&rspi->master->dev, "DMA timeout\n");
-		ret = -ETIMEDOUT;
+	} else {
+		if (!ret) {
+			dev_err(&rspi->ctlr->dev, "DMA timeout\n");
+			ret = -ETIMEDOUT;
+		}
 		if (tx)
-			dmaengine_terminate_all(rspi->master->dma_tx);
+			dmaengine_terminate_all(rspi->ctlr->dma_tx);
 		if (rx)
-			dmaengine_terminate_all(rspi->master->dma_rx);
+			dmaengine_terminate_all(rspi->ctlr->dma_rx);
 	}
 
 	rspi_disable_irq(rspi, irq_mask);
@@ -555,12 +617,12 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 
 no_dma_tx:
 	if (rx)
-		dmaengine_terminate_all(rspi->master->dma_rx);
+		dmaengine_terminate_all(rspi->ctlr->dma_rx);
 no_dma_rx:
 	if (ret == -EAGAIN) {
 		pr_warn_once("%s %s: DMA not available, falling back to PIO\n",
-			     dev_driver_string(&rspi->master->dev),
-			     dev_name(&rspi->master->dev));
+			     dev_driver_string(&rspi->ctlr->dev),
+			     dev_name(&rspi->ctlr->dev));
 	}
 	return ret;
 }
@@ -601,12 +663,23 @@ static bool __rspi_can_dma(const struct rspi_data *rspi,
 	return xfer->len > rspi->ops->fifo_size;
 }
 
-static bool rspi_can_dma(struct spi_master *master, struct spi_device *spi,
+static bool rspi_can_dma(struct spi_controller *ctlr, struct spi_device *spi,
 			 struct spi_transfer *xfer)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
 
 	return __rspi_can_dma(rspi, xfer);
+}
+
+static int rspi_dma_check_then_transfer(struct rspi_data *rspi,
+					 struct spi_transfer *xfer)
+{
+	if (!rspi->ctlr->can_dma || !__rspi_can_dma(rspi, xfer))
+		return -EAGAIN;
+
+	/* rx_buf can be NULL on RSPI on SH in TX-only Mode */
+	return rspi_dma_transfer(rspi, &xfer->tx_sg,
+				xfer->rx_buf ? &xfer->rx_sg : NULL);
 }
 
 static int rspi_common_transfer(struct rspi_data *rspi,
@@ -614,13 +687,9 @@ static int rspi_common_transfer(struct rspi_data *rspi,
 {
 	int ret;
 
-	if (rspi->master->can_dma && __rspi_can_dma(rspi, xfer)) {
-		/* rx_buf can be NULL on RSPI on SH in TX-only Mode */
-		ret = rspi_dma_transfer(rspi, &xfer->tx_sg,
-					xfer->rx_buf ? &xfer->rx_sg : NULL);
-		if (ret != -EAGAIN)
-			return ret;
-	}
+	ret = rspi_dma_check_then_transfer(rspi, xfer);
+	if (ret != -EAGAIN)
+		return ret;
 
 	ret = rspi_pio_transfer(rspi, xfer->tx_buf, xfer->rx_buf, xfer->len);
 	if (ret < 0)
@@ -632,10 +701,10 @@ static int rspi_common_transfer(struct rspi_data *rspi,
 	return 0;
 }
 
-static int rspi_transfer_one(struct spi_master *master, struct spi_device *spi,
-			     struct spi_transfer *xfer)
+static int rspi_transfer_one(struct spi_controller *ctlr,
+			     struct spi_device *spi, struct spi_transfer *xfer)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
 	u8 spcr;
 
 	spcr = rspi_read8(rspi, RSPI_SPCR);
@@ -650,38 +719,88 @@ static int rspi_transfer_one(struct spi_master *master, struct spi_device *spi,
 	return rspi_common_transfer(rspi, xfer);
 }
 
-static int rspi_rz_transfer_one(struct spi_master *master,
+static int rspi_rz_transfer_one(struct spi_controller *ctlr,
 				struct spi_device *spi,
 				struct spi_transfer *xfer)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
 
 	rspi_rz_receive_init(rspi);
 
 	return rspi_common_transfer(rspi, xfer);
 }
 
+static int qspi_trigger_transfer_out_in(struct rspi_data *rspi, const u8 *tx,
+					u8 *rx, unsigned int len)
+{
+	unsigned int i, n;
+	int ret;
+
+	while (len > 0) {
+		n = qspi_set_send_trigger(rspi, len);
+		qspi_set_receive_trigger(rspi, len);
+		ret = rspi_wait_for_tx_empty(rspi);
+		if (ret < 0) {
+			dev_err(&rspi->ctlr->dev, "transmit timeout\n");
+			return ret;
+		}
+		for (i = 0; i < n; i++)
+			rspi_write_data(rspi, *tx++);
+
+		ret = rspi_wait_for_rx_full(rspi);
+		if (ret < 0) {
+			dev_err(&rspi->ctlr->dev, "receive timeout\n");
+			return ret;
+		}
+		for (i = 0; i < n; i++)
+			*rx++ = rspi_read_data(rspi);
+
+		len -= n;
+	}
+
+	return 0;
+}
+
 static int qspi_transfer_out_in(struct rspi_data *rspi,
 				struct spi_transfer *xfer)
 {
+	int ret;
+
 	qspi_receive_init(rspi);
 
-	return rspi_common_transfer(rspi, xfer);
+	ret = rspi_dma_check_then_transfer(rspi, xfer);
+	if (ret != -EAGAIN)
+		return ret;
+
+	return qspi_trigger_transfer_out_in(rspi, xfer->tx_buf,
+					    xfer->rx_buf, xfer->len);
 }
 
 static int qspi_transfer_out(struct rspi_data *rspi, struct spi_transfer *xfer)
 {
+	const u8 *tx = xfer->tx_buf;
+	unsigned int n = xfer->len;
+	unsigned int i, len;
 	int ret;
 
-	if (rspi->master->can_dma && __rspi_can_dma(rspi, xfer)) {
+	if (rspi->ctlr->can_dma && __rspi_can_dma(rspi, xfer)) {
 		ret = rspi_dma_transfer(rspi, &xfer->tx_sg, NULL);
 		if (ret != -EAGAIN)
 			return ret;
 	}
 
-	ret = rspi_pio_transfer(rspi, xfer->tx_buf, NULL, xfer->len);
-	if (ret < 0)
-		return ret;
+	while (n > 0) {
+		len = qspi_set_send_trigger(rspi, n);
+		ret = rspi_wait_for_tx_empty(rspi);
+		if (ret < 0) {
+			dev_err(&rspi->ctlr->dev, "transmit timeout\n");
+			return ret;
+		}
+		for (i = 0; i < len; i++)
+			rspi_write_data(rspi, *tx++);
+
+		n -= len;
+	}
 
 	/* Wait for the last transmission */
 	rspi_wait_for_tx_empty(rspi);
@@ -691,19 +810,37 @@ static int qspi_transfer_out(struct rspi_data *rspi, struct spi_transfer *xfer)
 
 static int qspi_transfer_in(struct rspi_data *rspi, struct spi_transfer *xfer)
 {
-	if (rspi->master->can_dma && __rspi_can_dma(rspi, xfer)) {
+	u8 *rx = xfer->rx_buf;
+	unsigned int n = xfer->len;
+	unsigned int i, len;
+	int ret;
+
+	if (rspi->ctlr->can_dma && __rspi_can_dma(rspi, xfer)) {
 		int ret = rspi_dma_transfer(rspi, NULL, &xfer->rx_sg);
 		if (ret != -EAGAIN)
 			return ret;
 	}
 
-	return rspi_pio_transfer(rspi, NULL, xfer->rx_buf, xfer->len);
+	while (n > 0) {
+		len = qspi_set_receive_trigger(rspi, n);
+		ret = rspi_wait_for_rx_full(rspi);
+		if (ret < 0) {
+			dev_err(&rspi->ctlr->dev, "receive timeout\n");
+			return ret;
+		}
+		for (i = 0; i < len; i++)
+			*rx++ = rspi_read_data(rspi);
+
+		n -= len;
+	}
+
+	return 0;
 }
 
-static int qspi_transfer_one(struct spi_master *master, struct spi_device *spi,
-			     struct spi_transfer *xfer)
+static int qspi_transfer_one(struct spi_controller *ctlr,
+			     struct spi_device *spi, struct spi_transfer *xfer)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
 
 	if (spi->mode & SPI_LOOP) {
 		return qspi_transfer_out_in(rspi, xfer);
@@ -717,28 +854,6 @@ static int qspi_transfer_one(struct spi_master *master, struct spi_device *spi,
 		/* Single SPI Transfer */
 		return qspi_transfer_out_in(rspi, xfer);
 	}
-}
-
-static int rspi_setup(struct spi_device *spi)
-{
-	struct rspi_data *rspi = spi_master_get_devdata(spi->master);
-
-	rspi->max_speed_hz = spi->max_speed_hz;
-
-	rspi->spcmd = SPCMD_SSLKP;
-	if (spi->mode & SPI_CPOL)
-		rspi->spcmd |= SPCMD_CPOL;
-	if (spi->mode & SPI_CPHA)
-		rspi->spcmd |= SPCMD_CPHA;
-
-	/* CMOS output mode and MOSI signal from previous transfer */
-	rspi->sppcr = 0;
-	if (spi->mode & SPI_LOOP)
-		rspi->sppcr |= SPPCR_SPLP;
-
-	set_config_register(rspi, 8);
-
-	return 0;
 }
 
 static u16 qspi_transfer_mode(const struct spi_transfer *xfer)
@@ -806,11 +921,27 @@ static int qspi_setup_sequencer(struct rspi_data *rspi,
 	return 0;
 }
 
-static int rspi_prepare_message(struct spi_master *master,
+static int rspi_prepare_message(struct spi_controller *ctlr,
 				struct spi_message *msg)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
+	struct spi_device *spi = msg->spi;
 	int ret;
+
+	rspi->max_speed_hz = spi->max_speed_hz;
+
+	rspi->spcmd = SPCMD_SSLKP;
+	if (spi->mode & SPI_CPOL)
+		rspi->spcmd |= SPCMD_CPOL;
+	if (spi->mode & SPI_CPHA)
+		rspi->spcmd |= SPCMD_CPHA;
+
+	/* CMOS output mode and MOSI signal from previous transfer */
+	rspi->sppcr = 0;
+	if (spi->mode & SPI_LOOP)
+		rspi->sppcr |= SPPCR_SPLP;
+
+	set_config_register(rspi, 8);
 
 	if (msg->spi->mode &
 	    (SPI_TX_DUAL | SPI_TX_QUAD | SPI_RX_DUAL | SPI_RX_QUAD)) {
@@ -825,10 +956,10 @@ static int rspi_prepare_message(struct spi_master *master,
 	return 0;
 }
 
-static int rspi_unprepare_message(struct spi_master *master,
+static int rspi_unprepare_message(struct spi_controller *ctlr,
 				  struct spi_message *msg)
 {
-	struct rspi_data *rspi = spi_master_get_devdata(master);
+	struct rspi_data *rspi = spi_controller_get_devdata(ctlr);
 
 	/* Disable SPI function */
 	rspi_write8(rspi, rspi_read8(rspi, RSPI_SPCR) & ~SPCR_SPE, RSPI_SPCR);
@@ -913,7 +1044,6 @@ static struct dma_chan *rspi_request_dma_chan(struct device *dev,
 	}
 
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.slave_id = id;
 	cfg.direction = dir;
 	if (dir == DMA_MEM_TO_DEV) {
 		cfg.dst_addr = port_addr;
@@ -933,7 +1063,7 @@ static struct dma_chan *rspi_request_dma_chan(struct device *dev,
 	return chan;
 }
 
-static int rspi_request_dma(struct device *dev, struct spi_master *master,
+static int rspi_request_dma(struct device *dev, struct spi_controller *ctlr,
 			    const struct resource *res)
 {
 	const struct rspi_plat_data *rspi_pd = dev_get_platdata(dev);
@@ -951,37 +1081,37 @@ static int rspi_request_dma(struct device *dev, struct spi_master *master,
 		return 0;
 	}
 
-	master->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV, dma_tx_id,
-					       res->start + RSPI_SPDR);
-	if (!master->dma_tx)
+	ctlr->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV, dma_tx_id,
+					     res->start + RSPI_SPDR);
+	if (!ctlr->dma_tx)
 		return -ENODEV;
 
-	master->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM, dma_rx_id,
-					       res->start + RSPI_SPDR);
-	if (!master->dma_rx) {
-		dma_release_channel(master->dma_tx);
-		master->dma_tx = NULL;
+	ctlr->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM, dma_rx_id,
+					     res->start + RSPI_SPDR);
+	if (!ctlr->dma_rx) {
+		dma_release_channel(ctlr->dma_tx);
+		ctlr->dma_tx = NULL;
 		return -ENODEV;
 	}
 
-	master->can_dma = rspi_can_dma;
+	ctlr->can_dma = rspi_can_dma;
 	dev_info(dev, "DMA available");
 	return 0;
 }
 
-static void rspi_release_dma(struct spi_master *master)
+static void rspi_release_dma(struct spi_controller *ctlr)
 {
-	if (master->dma_tx)
-		dma_release_channel(master->dma_tx);
-	if (master->dma_rx)
-		dma_release_channel(master->dma_rx);
+	if (ctlr->dma_tx)
+		dma_release_channel(ctlr->dma_tx);
+	if (ctlr->dma_rx)
+		dma_release_channel(ctlr->dma_rx);
 }
 
 static int rspi_remove(struct platform_device *pdev)
 {
 	struct rspi_data *rspi = platform_get_drvdata(pdev);
 
-	rspi_release_dma(rspi->master);
+	rspi_release_dma(rspi->ctlr);
 	pm_runtime_disable(&pdev->dev);
 
 	return 0;
@@ -991,7 +1121,7 @@ static const struct spi_ops rspi_ops = {
 	.set_config_register =	rspi_set_config_register,
 	.transfer_one =		rspi_transfer_one,
 	.mode_bits =		SPI_CPHA | SPI_CPOL | SPI_LOOP,
-	.flags =		SPI_MASTER_MUST_TX,
+	.flags =		SPI_CONTROLLER_MUST_TX,
 	.fifo_size =		8,
 };
 
@@ -999,7 +1129,7 @@ static const struct spi_ops rspi_rz_ops = {
 	.set_config_register =	rspi_rz_set_config_register,
 	.transfer_one =		rspi_rz_transfer_one,
 	.mode_bits =		SPI_CPHA | SPI_CPOL | SPI_LOOP,
-	.flags =		SPI_MASTER_MUST_RX | SPI_MASTER_MUST_TX,
+	.flags =		SPI_CONTROLLER_MUST_RX | SPI_CONTROLLER_MUST_TX,
 	.fifo_size =		8,	/* 8 for TX, 32 for RX */
 };
 
@@ -1009,7 +1139,7 @@ static const struct spi_ops qspi_ops = {
 	.mode_bits =		SPI_CPHA | SPI_CPOL | SPI_LOOP |
 				SPI_TX_DUAL | SPI_TX_QUAD |
 				SPI_RX_DUAL | SPI_RX_QUAD,
-	.flags =		SPI_MASTER_MUST_RX | SPI_MASTER_MUST_TX,
+	.flags =		SPI_CONTROLLER_MUST_RX | SPI_CONTROLLER_MUST_TX,
 	.fifo_size =		32,
 };
 
@@ -1026,7 +1156,7 @@ static const struct of_device_id rspi_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, rspi_of_match);
 
-static int rspi_parse_dt(struct device *dev, struct spi_master *master)
+static int rspi_parse_dt(struct device *dev, struct spi_controller *ctlr)
 {
 	u32 num_cs;
 	int error;
@@ -1038,12 +1168,12 @@ static int rspi_parse_dt(struct device *dev, struct spi_master *master)
 		return error;
 	}
 
-	master->num_chipselect = num_cs;
+	ctlr->num_chipselect = num_cs;
 	return 0;
 }
 #else
 #define rspi_of_match	NULL
-static inline int rspi_parse_dt(struct device *dev, struct spi_master *master)
+static inline int rspi_parse_dt(struct device *dev, struct spi_controller *ctlr)
 {
 	return -EINVAL;
 }
@@ -1064,32 +1194,28 @@ static int rspi_request_irq(struct device *dev, unsigned int irq,
 static int rspi_probe(struct platform_device *pdev)
 {
 	struct resource *res;
-	struct spi_master *master;
+	struct spi_controller *ctlr;
 	struct rspi_data *rspi;
 	int ret;
-	const struct of_device_id *of_id;
 	const struct rspi_plat_data *rspi_pd;
 	const struct spi_ops *ops;
 
-	master = spi_alloc_master(&pdev->dev, sizeof(struct rspi_data));
-	if (master == NULL) {
-		dev_err(&pdev->dev, "spi_alloc_master error.\n");
+	ctlr = spi_alloc_master(&pdev->dev, sizeof(struct rspi_data));
+	if (ctlr == NULL)
 		return -ENOMEM;
-	}
 
-	of_id = of_match_device(rspi_of_match, &pdev->dev);
-	if (of_id) {
-		ops = of_id->data;
-		ret = rspi_parse_dt(&pdev->dev, master);
+	ops = of_device_get_match_data(&pdev->dev);
+	if (ops) {
+		ret = rspi_parse_dt(&pdev->dev, ctlr);
 		if (ret)
 			goto error1;
 	} else {
 		ops = (struct spi_ops *)pdev->id_entry->driver_data;
 		rspi_pd = dev_get_platdata(&pdev->dev);
 		if (rspi_pd && rspi_pd->num_chipselect)
-			master->num_chipselect = rspi_pd->num_chipselect;
+			ctlr->num_chipselect = rspi_pd->num_chipselect;
 		else
-			master->num_chipselect = 2; /* default */
+			ctlr->num_chipselect = 2; /* default */
 	}
 
 	/* ops parameter check */
@@ -1099,10 +1225,10 @@ static int rspi_probe(struct platform_device *pdev)
 		goto error1;
 	}
 
-	rspi = spi_master_get_devdata(master);
+	rspi = spi_controller_get_devdata(ctlr);
 	platform_set_drvdata(pdev, rspi);
 	rspi->ops = ops;
-	rspi->master = master;
+	rspi->ctlr = ctlr;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	rspi->addr = devm_ioremap_resource(&pdev->dev, res);
@@ -1122,19 +1248,18 @@ static int rspi_probe(struct platform_device *pdev)
 
 	init_waitqueue_head(&rspi->wait);
 
-	master->bus_num = pdev->id;
-	master->setup = rspi_setup;
-	master->auto_runtime_pm = true;
-	master->transfer_one = ops->transfer_one;
-	master->prepare_message = rspi_prepare_message;
-	master->unprepare_message = rspi_unprepare_message;
-	master->mode_bits = ops->mode_bits;
-	master->flags = ops->flags;
-	master->dev.of_node = pdev->dev.of_node;
+	ctlr->bus_num = pdev->id;
+	ctlr->auto_runtime_pm = true;
+	ctlr->transfer_one = ops->transfer_one;
+	ctlr->prepare_message = rspi_prepare_message;
+	ctlr->unprepare_message = rspi_unprepare_message;
+	ctlr->mode_bits = ops->mode_bits;
+	ctlr->flags = ops->flags;
+	ctlr->dev.of_node = pdev->dev.of_node;
 
-	ret = platform_get_irq_byname(pdev, "rx");
+	ret = platform_get_irq_byname_optional(pdev, "rx");
 	if (ret < 0) {
-		ret = platform_get_irq_byname(pdev, "mux");
+		ret = platform_get_irq_byname_optional(pdev, "mux");
 		if (ret < 0)
 			ret = platform_get_irq(pdev, 0);
 		if (ret >= 0)
@@ -1144,10 +1269,6 @@ static int rspi_probe(struct platform_device *pdev)
 		ret = platform_get_irq_byname(pdev, "tx");
 		if (ret >= 0)
 			rspi->tx_irq = ret;
-	}
-	if (ret < 0) {
-		dev_err(&pdev->dev, "platform_get_irq error\n");
-		goto error2;
 	}
 
 	if (rspi->rx_irq == rspi->tx_irq) {
@@ -1167,13 +1288,13 @@ static int rspi_probe(struct platform_device *pdev)
 		goto error2;
 	}
 
-	ret = rspi_request_dma(&pdev->dev, master, res);
+	ret = rspi_request_dma(&pdev->dev, ctlr, res);
 	if (ret < 0)
 		dev_warn(&pdev->dev, "DMA not available, using PIO\n");
 
-	ret = devm_spi_register_master(&pdev->dev, master);
+	ret = devm_spi_register_controller(&pdev->dev, ctlr);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "spi_register_master error.\n");
+		dev_err(&pdev->dev, "devm_spi_register_controller error.\n");
 		goto error3;
 	}
 
@@ -1182,16 +1303,16 @@ static int rspi_probe(struct platform_device *pdev)
 	return 0;
 
 error3:
-	rspi_release_dma(master);
+	rspi_release_dma(ctlr);
 error2:
 	pm_runtime_disable(&pdev->dev);
 error1:
-	spi_master_put(master);
+	spi_controller_put(ctlr);
 
 	return ret;
 }
 
-static struct platform_device_id spi_driver_ids[] = {
+static const struct platform_device_id spi_driver_ids[] = {
 	{ "rspi",	(kernel_ulong_t)&rspi_ops },
 	{ "rspi-rz",	(kernel_ulong_t)&rspi_rz_ops },
 	{ "qspi",	(kernel_ulong_t)&qspi_ops },
@@ -1200,12 +1321,34 @@ static struct platform_device_id spi_driver_ids[] = {
 
 MODULE_DEVICE_TABLE(platform, spi_driver_ids);
 
+#ifdef CONFIG_PM_SLEEP
+static int rspi_suspend(struct device *dev)
+{
+	struct rspi_data *rspi = dev_get_drvdata(dev);
+
+	return spi_controller_suspend(rspi->ctlr);
+}
+
+static int rspi_resume(struct device *dev)
+{
+	struct rspi_data *rspi = dev_get_drvdata(dev);
+
+	return spi_controller_resume(rspi->ctlr);
+}
+
+static SIMPLE_DEV_PM_OPS(rspi_pm_ops, rspi_suspend, rspi_resume);
+#define DEV_PM_OPS	&rspi_pm_ops
+#else
+#define DEV_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
+
 static struct platform_driver rspi_driver = {
 	.probe =	rspi_probe,
 	.remove =	rspi_remove,
 	.id_table =	spi_driver_ids,
 	.driver		= {
 		.name = "renesas_spi",
+		.pm = DEV_PM_OPS,
 		.of_match_table = of_match_ptr(rspi_of_match),
 	},
 };

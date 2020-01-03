@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * C-Media CMI8788 driver - PCM code
  *
  * Copyright (c) Clemens Ladisch <clemens@ladisch.de>
- *
- *
- *  This driver is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License, version 2.
- *
- *  This driver is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this driver; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/pci.h>
@@ -631,7 +619,7 @@ static snd_pcm_uframes_t oxygen_pointer(struct snd_pcm_substream *substream)
 	return bytes_to_frames(runtime, curr_addr - (u32)runtime->dma_addr);
 }
 
-static struct snd_pcm_ops oxygen_rec_a_ops = {
+static const struct snd_pcm_ops oxygen_rec_a_ops = {
 	.open      = oxygen_rec_a_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -642,7 +630,7 @@ static struct snd_pcm_ops oxygen_rec_a_ops = {
 	.pointer   = oxygen_pointer,
 };
 
-static struct snd_pcm_ops oxygen_rec_b_ops = {
+static const struct snd_pcm_ops oxygen_rec_b_ops = {
 	.open      = oxygen_rec_b_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -653,7 +641,7 @@ static struct snd_pcm_ops oxygen_rec_b_ops = {
 	.pointer   = oxygen_pointer,
 };
 
-static struct snd_pcm_ops oxygen_rec_c_ops = {
+static const struct snd_pcm_ops oxygen_rec_c_ops = {
 	.open      = oxygen_rec_c_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -664,7 +652,7 @@ static struct snd_pcm_ops oxygen_rec_c_ops = {
 	.pointer   = oxygen_pointer,
 };
 
-static struct snd_pcm_ops oxygen_spdif_ops = {
+static const struct snd_pcm_ops oxygen_spdif_ops = {
 	.open      = oxygen_spdif_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -675,7 +663,7 @@ static struct snd_pcm_ops oxygen_spdif_ops = {
 	.pointer   = oxygen_pointer,
 };
 
-static struct snd_pcm_ops oxygen_multich_ops = {
+static const struct snd_pcm_ops oxygen_multich_ops = {
 	.open      = oxygen_multich_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -686,7 +674,7 @@ static struct snd_pcm_ops oxygen_multich_ops = {
 	.pointer   = oxygen_pointer,
 };
 
-static struct snd_pcm_ops oxygen_ac97_ops = {
+static const struct snd_pcm_ops oxygen_ac97_ops = {
 	.open      = oxygen_ac97_open,
 	.close     = oxygen_close,
 	.ioctl     = snd_pcm_lib_ioctl,
@@ -725,13 +713,13 @@ int oxygen_pcm_init(struct oxygen *chip)
 		if (outs)
 			snd_pcm_lib_preallocate_pages(pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream,
 						      SNDRV_DMA_TYPE_DEV,
-						      snd_dma_pci_data(chip->pci),
+						      &chip->pci->dev,
 						      DEFAULT_BUFFER_BYTES_MULTICH,
 						      BUFFER_BYTES_MAX_MULTICH);
 		if (ins)
 			snd_pcm_lib_preallocate_pages(pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream,
 						      SNDRV_DMA_TYPE_DEV,
-						      snd_dma_pci_data(chip->pci),
+						      &chip->pci->dev,
 						      DEFAULT_BUFFER_BYTES,
 						      BUFFER_BYTES_MAX);
 	}
@@ -751,7 +739,7 @@ int oxygen_pcm_init(struct oxygen *chip)
 		pcm->private_data = chip;
 		strcpy(pcm->name, "Digital");
 		snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-						      snd_dma_pci_data(chip->pci),
+						      &chip->pci->dev,
 						      DEFAULT_BUFFER_BYTES,
 						      BUFFER_BYTES_MAX);
 	}
@@ -781,7 +769,7 @@ int oxygen_pcm_init(struct oxygen *chip)
 		pcm->private_data = chip;
 		strcpy(pcm->name, outs ? "Front Panel" : "Analog 2");
 		snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-						      snd_dma_pci_data(chip->pci),
+						      &chip->pci->dev,
 						      DEFAULT_BUFFER_BYTES,
 						      BUFFER_BYTES_MAX);
 	}
@@ -799,7 +787,7 @@ int oxygen_pcm_init(struct oxygen *chip)
 		pcm->private_data = chip;
 		strcpy(pcm->name, "Analog 3");
 		snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-						      snd_dma_pci_data(chip->pci),
+						      &chip->pci->dev,
 						      DEFAULT_BUFFER_BYTES,
 						      BUFFER_BYTES_MAX);
 	}

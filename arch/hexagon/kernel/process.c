@@ -1,24 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Process creation support for Hexagon
  *
  * Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
  */
 
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/tick.h>
@@ -37,8 +27,6 @@
  */
 void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp)
 {
-	/* Set to run with user-mode data segmentation */
-	set_fs(USER_DS);
 	/* We want to zero all data-containing registers. Is this overkill? */
 	memset(regs, 0, sizeof(*regs));
 	/* We might want to also zero all Processor registers here */
@@ -57,14 +45,6 @@ void arch_cpu_idle(void)
 	__vmwait();
 	/*  interrupts wake us up, but irqs are still disabled */
 	local_irq_enable();
-}
-
-/*
- *  Return saved PC of a blocked thread
- */
-unsigned long thread_saved_pc(struct task_struct *tsk)
-{
-	return 0;
 }
 
 /*
@@ -135,13 +115,6 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
  * Release any architecture-specific resources locked by thread
  */
 void release_thread(struct task_struct *dead_task)
-{
-}
-
-/*
- * Free any architecture-specific thread data structures, etc.
- */
-void exit_thread(void)
 {
 }
 

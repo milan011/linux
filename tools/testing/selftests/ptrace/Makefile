@@ -1,10 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 CFLAGS += -iquote../../../../include/uapi -Wall
-peeksiginfo: peeksiginfo.c
 
-all: peeksiginfo
+TEST_GEN_PROGS := get_syscall_info peeksiginfo
 
-clean:
-	rm -f peeksiginfo
-
-run_tests: all
-	@./peeksiginfo || echo "peeksiginfo selftests: [FAIL]"
+include ../lib.mk

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Universal interface for Audio Codec '97
@@ -5,22 +6,6 @@
  *  For more details look to AC '97 component specification revision 2.2
  *  by Intel Corporation (http://developer.intel.com) and to datasheets
  *  for specific codecs.
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include "ac97_local.h"
@@ -3093,7 +3078,7 @@ static int patch_cm9739(struct snd_ac97 * ac97)
 	/* set-up multi channel */
 	/* bit 14: 0 = SPDIF, 1 = EAPD */
 	/* bit 13: enable internal vref output for mic */
-	/* bit 12: disable center/lfe (swithable) */
+	/* bit 12: disable center/lfe (switchable) */
 	/* bit 10: disable surround/line (switchable) */
 	/* bit 9: mix 2 surround off */
 	/* bit 4: undocumented; 0 mutes the CM9739A, which defaults to 1 */
@@ -3347,6 +3332,33 @@ static int patch_cm9780(struct snd_ac97 *ac97)
 		val |= 0x1; /* SPDI_EN */
 		snd_ac97_write_cache(ac97, AC97_CM9780_SPDIF, val);
 	}
+
+	return 0;
+}
+
+/*
+ * VIA VT1613 codec
+ */
+static const struct snd_kcontrol_new snd_ac97_controls_vt1613[] = {
+AC97_SINGLE("DC Offset removal", 0x5a, 10, 1, 0),
+};
+
+static int patch_vt1613_specific(struct snd_ac97 *ac97)
+{
+	return patch_build_controls(ac97, &snd_ac97_controls_vt1613[0],
+				    ARRAY_SIZE(snd_ac97_controls_vt1613));
+};
+
+static const struct snd_ac97_build_ops patch_vt1613_ops = {
+	.build_specific	= patch_vt1613_specific
+};
+
+static int patch_vt1613(struct snd_ac97 *ac97)
+{
+	ac97->build_ops = &patch_vt1613_ops;
+
+	ac97->flags |= AC97_HAS_NO_VIDEO;
+	ac97->caps |= AC97_BC_HEADPHONE;
 
 	return 0;
 }

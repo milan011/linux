@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * misc setup functions for MPC83xx
  *
  * Maintainer: Kumar Gala <galak@kernel.crashing.org>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/stddef.h>
@@ -14,12 +10,15 @@
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 
+#include <asm/debug.h>
 #include <asm/io.h>
 #include <asm/hw_irq.h>
 #include <asm/ipic.h>
-#include <asm/qe_ic.h>
+#include <soc/fsl/qe/qe_ic.h>
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
+
+#include <mm/mmu_decl.h>
 
 #include "mpc83xx.h"
 
@@ -35,7 +34,7 @@ static int __init mpc83xx_restart_init(void)
 
 arch_initcall(mpc83xx_restart_init);
 
-void mpc83xx_restart(char *cmd)
+void __noreturn mpc83xx_restart(char *cmd)
 {
 #define RST_OFFSET	0x00000900
 #define RST_PROT_REG	0x00000018
@@ -142,3 +141,36 @@ void __init mpc83xx_setup_pci(void)
 		mpc83xx_add_bridge(np);
 }
 #endif
+
+void __init mpc83xx_setup_arch(void)
+{
+	if (ppc_md.progress)
+		ppc_md.progress("mpc83xx_setup_arch()", 0);
+
+	if (!__map_without_bats) {
+		phys_addr_t immrbase = get_immrbase();
+		int immrsize = IS_ALIGNED(immrbase, SZ_2M) ? SZ_2M : SZ_1M;
+		unsigned long va = fix_to_virt(FIX_IMMR_BASE);
+
+		setbat(-1, va, immrbase, immrsize, PAGE_KERNEL_NCG);
+		update_bats();
+	}
+
+	mpc83xx_setup_pci();
+}
+
+int machine_check_83xx(struct pt_regs *regs)
+{
+	u32 mask = 1 << (31 - IPIC_MCP_WDT);
+
+	if (!(regs->msr & SRR1_MCE_MCP) || !(ipic_get_mcp_status() & mask))
+		return machine_check_generic(regs);
+	ipic_clear_mcp_status(mask);
+
+	if (debugger_fault_handler(regs))
+		return 1;
+
+	die("Watchdog NMI Reset", regs, 0);
+
+	return 1;
+}

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2010 Pengutronix
  * Uwe Kleine-Koenig <u.kleine-koenig@pengutronix.de>
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 #include <linux/dma-mapping.h>
-#include <asm/sizes.h>
+#include <linux/sizes.h>
 
 #include "../hardware.h"
 #include "devices-common.h"
@@ -18,11 +15,6 @@
 		.iobase = soc ## _FEC_BASE_ADDR,			\
 		.irq = soc ## _INT_FEC,					\
 	}
-
-#ifdef CONFIG_SOC_IMX25
-const struct imx_fec_data imx25_fec_data __initconst =
-	imx_fec_data_entry_single(MX25, "imx25-fec");
-#endif /* ifdef CONFIG_SOC_IMX25 */
 
 #ifdef CONFIG_SOC_IMX27
 const struct imx_fec_data imx27_fec_data __initconst =

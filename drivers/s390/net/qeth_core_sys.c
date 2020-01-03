@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2007
  *    Author(s): Utz Bacher <utz.bacher@de.ibm.com>,
@@ -19,8 +20,6 @@ static ssize_t qeth_dev_state_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
 
 	switch (card->state) {
 	case CARD_STATE_DOWN:
@@ -28,14 +27,11 @@ static ssize_t qeth_dev_state_show(struct device *dev,
 	case CARD_STATE_HARDSETUP:
 		return sprintf(buf, "HARDSETUP\n");
 	case CARD_STATE_SOFTSETUP:
+		if (card->dev->flags & IFF_UP)
+			return sprintf(buf, "UP (LAN %s)\n",
+				       netif_carrier_ok(card->dev) ? "ONLINE" :
+								     "OFFLINE");
 		return sprintf(buf, "SOFTSETUP\n");
-	case CARD_STATE_UP:
-		if (card->lan_online)
-		return sprintf(buf, "UP (LAN ONLINE)\n");
-		else
-			return sprintf(buf, "UP (LAN OFFLINE)\n");
-	case CARD_STATE_RECOVER:
-		return sprintf(buf, "RECOVER\n");
 	default:
 		return sprintf(buf, "UNKNOWN\n");
 	}
@@ -47,8 +43,6 @@ static ssize_t qeth_dev_chpid_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
 
 	return sprintf(buf, "%02X\n", card->info.chpid);
 }
@@ -59,8 +53,7 @@ static ssize_t qeth_dev_if_name_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
+
 	return sprintf(buf, "%s\n", QETH_CARD_IFNAME(card));
 }
 
@@ -70,15 +63,13 @@ static ssize_t qeth_dev_card_type_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
 
 	return sprintf(buf, "%s\n", qeth_get_cardname_short(card));
 }
 
 static DEVICE_ATTR(card_type, 0444, qeth_dev_card_type_show, NULL);
 
-static inline const char *qeth_get_bufsize_str(struct qeth_card *card)
+static const char *qeth_get_bufsize_str(struct qeth_card *card)
 {
 	if (card->qdio.in_buf_size == 16384)
 		return "16k";
@@ -96,8 +87,6 @@ static ssize_t qeth_dev_inbuf_size_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
 
 	return sprintf(buf, "%s\n", qeth_get_bufsize_str(card));
 }
@@ -108,10 +97,8 @@ static ssize_t qeth_dev_portno_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	if (!card)
-		return -EINVAL;
 
-	return sprintf(buf, "%i\n", card->info.portno);
+	return sprintf(buf, "%i\n", card->dev->dev_port);
 }
 
 static ssize_t qeth_dev_portno_store(struct device *dev,
@@ -122,12 +109,8 @@ static ssize_t qeth_dev_portno_store(struct device *dev,
 	unsigned int portno, limit;
 	int rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
 	mutex_lock(&card->conf_mutex);
-	if ((card->state != CARD_STATE_DOWN) &&
-	    (card->state != CARD_STATE_RECOVER)) {
+	if (card->state != CARD_STATE_DOWN) {
 		rc = -EPERM;
 		goto out;
 	}
@@ -142,7 +125,7 @@ static ssize_t qeth_dev_portno_store(struct device *dev,
 		rc = -EINVAL;
 		goto out;
 	}
-	card->info.portno = portno;
+	card->dev->dev_port = portno;
 out:
 	mutex_unlock(&card->conf_mutex);
 	return rc ? rc : count;
@@ -153,52 +136,17 @@ static DEVICE_ATTR(portno, 0644, qeth_dev_portno_show, qeth_dev_portno_store);
 static ssize_t qeth_dev_portname_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct qeth_card *card = dev_get_drvdata(dev);
-	char portname[9] = {0, };
-
-	if (!card)
-		return -EINVAL;
-
-	if (card->info.portname_required) {
-		memcpy(portname, card->info.portname + 1, 8);
-		EBCASC(portname, 8);
-		return sprintf(buf, "%s\n", portname);
-	} else
-		return sprintf(buf, "no portname required\n");
+	return sprintf(buf, "no portname required\n");
 }
 
 static ssize_t qeth_dev_portname_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	char *tmp;
-	int i, rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
-	mutex_lock(&card->conf_mutex);
-	if ((card->state != CARD_STATE_DOWN) &&
-	    (card->state != CARD_STATE_RECOVER)) {
-		rc = -EPERM;
-		goto out;
-	}
-
-	tmp = strsep((char **) &buf, "\n");
-	if ((strlen(tmp) > 8) || (strlen(tmp) == 0)) {
-		rc = -EINVAL;
-		goto out;
-	}
-
-	card->info.portname[0] = strlen(tmp);
-	/* for beauty reasons */
-	for (i = 1; i < 9; i++)
-		card->info.portname[i] = ' ';
-	strcpy(card->info.portname + 1, tmp);
-	ASCEBC(card->info.portname + 1, 8);
-out:
-	mutex_unlock(&card->conf_mutex);
-	return rc ? rc : count;
+	dev_warn_once(&card->gdev->dev,
+		      "portname is deprecated and is ignored\n");
+	return count;
 }
 
 static DEVICE_ATTR(portname, 0644, qeth_dev_portname_show,
@@ -208,9 +156,6 @@ static ssize_t qeth_dev_prioqing_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-
-	if (!card)
-		return -EINVAL;
 
 	switch (card->qdio.do_prio_queueing) {
 	case QETH_PRIO_Q_ING_PREC:
@@ -233,12 +178,11 @@ static ssize_t qeth_dev_prioqing_store(struct device *dev,
 	struct qeth_card *card = dev_get_drvdata(dev);
 	int rc = 0;
 
-	if (!card)
-		return -EINVAL;
+	if (IS_IQD(card))
+		return -EOPNOTSUPP;
 
 	mutex_lock(&card->conf_mutex);
-	if ((card->state != CARD_STATE_DOWN) &&
-	    (card->state != CARD_STATE_RECOVER)) {
+	if (card->state != CARD_STATE_DOWN) {
 		rc = -EPERM;
 		goto out;
 	}
@@ -262,8 +206,8 @@ static ssize_t qeth_dev_prioqing_store(struct device *dev,
 		card->qdio.do_prio_queueing = QETH_PRIO_Q_ING_TOS;
 		card->qdio.default_out_queue = QETH_DEFAULT_QUEUE;
 	} else if (sysfs_streq(buf, "prio_queueing_vlan")) {
-		if (!card->options.layer2) {
-			rc = -ENOTSUPP;
+		if (IS_LAYER3(card)) {
+			rc = -EOPNOTSUPP;
 			goto out;
 		}
 		card->qdio.do_prio_queueing = QETH_PRIO_Q_ING_VLAN;
@@ -298,9 +242,6 @@ static ssize_t qeth_dev_bufcnt_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	if (!card)
-		return -EINVAL;
-
 	return sprintf(buf, "%i\n", card->qdio.in_buf_pool.buf_count);
 }
 
@@ -312,12 +253,8 @@ static ssize_t qeth_dev_bufcnt_store(struct device *dev,
 	int cnt, old_cnt;
 	int rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
 	mutex_lock(&card->conf_mutex);
-	if ((card->state != CARD_STATE_DOWN) &&
-	    (card->state != CARD_STATE_RECOVER)) {
+	if (card->state != CARD_STATE_DOWN) {
 		rc = -EPERM;
 		goto out;
 	}
@@ -344,10 +281,7 @@ static ssize_t qeth_dev_recover_store(struct device *dev,
 	char *tmp;
 	int i;
 
-	if (!card)
-		return -EINVAL;
-
-	if (card->state != CARD_STATE_UP)
+	if (!qeth_card_hw_is_reachable(card))
 		return -EPERM;
 
 	i = simple_strtoul(buf, &tmp, 16);
@@ -362,40 +296,33 @@ static DEVICE_ATTR(recover, 0200, NULL, qeth_dev_recover_store);
 static ssize_t qeth_dev_performance_stats_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
-	struct qeth_card *card = dev_get_drvdata(dev);
-
-	if (!card)
-		return -EINVAL;
-
-	return sprintf(buf, "%i\n", card->options.performance_stats ? 1:0);
+	return sprintf(buf, "1\n");
 }
 
 static ssize_t qeth_dev_performance_stats_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-	char *tmp;
-	int i, rc = 0;
+	struct qeth_qdio_out_q *queue;
+	unsigned int i;
+	bool reset;
+	int rc;
 
-	if (!card)
-		return -EINVAL;
+	rc = kstrtobool(buf, &reset);
+	if (rc)
+		return rc;
 
-	mutex_lock(&card->conf_mutex);
-	i = simple_strtoul(buf, &tmp, 16);
-	if ((i == 0) || (i == 1)) {
-		if (i == card->options.performance_stats)
-			goto out;
-		card->options.performance_stats = i;
-		if (i == 0)
-			memset(&card->perf_stats, 0,
-				sizeof(struct qeth_perf_stats));
-		card->perf_stats.initial_rx_packets = card->stats.rx_packets;
-		card->perf_stats.initial_tx_packets = card->stats.tx_packets;
-	} else
-		rc = -EINVAL;
-out:
-	mutex_unlock(&card->conf_mutex);
-	return rc ? rc : count;
+	if (reset) {
+		memset(&card->stats, 0, sizeof(card->stats));
+		for (i = 0; i < card->qdio.no_out_queues; i++) {
+			queue = card->qdio.out_qs[i];
+			if (!queue)
+				break;
+			memset(&queue->stats, 0, sizeof(queue->stats));
+		}
+	}
+
+	return count;
 }
 
 static DEVICE_ATTR(performance_stats, 0644, qeth_dev_performance_stats_show,
@@ -406,22 +333,17 @@ static ssize_t qeth_dev_layer2_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	if (!card)
-		return -EINVAL;
-
-	return sprintf(buf, "%i\n", card->options.layer2);
+	return sprintf(buf, "%i\n", card->options.layer);
 }
 
 static ssize_t qeth_dev_layer2_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
+	struct net_device *ndev;
 	char *tmp;
 	int i, rc = 0;
 	enum qeth_discipline_id newdis;
-
-	if (!card)
-		return -EINVAL;
 
 	mutex_lock(&card->discipline_mutex);
 	if (card->state != CARD_STATE_DOWN) {
@@ -442,14 +364,26 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 		goto out;
 	}
 
-	if (card->options.layer2 == newdis)
+	if (card->options.layer == newdis)
 		goto out;
-	else {
-		card->info.mac_bits  = 0;
-		if (card->discipline) {
-			card->discipline->remove(card->gdev);
-			qeth_core_free_discipline(card);
+	if (card->info.layer_enforced) {
+		/* fixed layer, can't switch */
+		rc = -EOPNOTSUPP;
+		goto out;
+	}
+
+	if (card->discipline) {
+		/* start with a new, pristine netdevice: */
+		ndev = qeth_clone_netdev(card->dev);
+		if (!ndev) {
+			rc = -ENOMEM;
+			goto out;
 		}
+
+		card->discipline->remove(card->gdev);
+		qeth_core_free_discipline(card);
+		free_netdev(card->dev);
+		card->dev = ndev;
 	}
 
 	rc = qeth_core_load_discipline(card, newdis);
@@ -457,6 +391,8 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 		goto out;
 
 	rc = card->discipline->setup(card->gdev);
+	if (rc)
+		qeth_core_free_discipline(card);
 out:
 	mutex_unlock(&card->discipline_mutex);
 	return rc ? rc : count;
@@ -473,9 +409,6 @@ static ssize_t qeth_dev_isolation_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
-
-	if (!card)
-		return -EINVAL;
 
 	switch (card->options.isolation) {
 	case ISOLATION_MODE_NONE:
@@ -496,14 +429,8 @@ static ssize_t qeth_dev_isolation_store(struct device *dev,
 	enum qeth_ipa_isolation_modes isolation;
 	int rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
 	mutex_lock(&card->conf_mutex);
-	/* check for unknown, too, in case we do not yet know who we are */
-	if (card->info.type != QETH_CARD_TYPE_OSD &&
-	    card->info.type != QETH_CARD_TYPE_OSX &&
-	    card->info.type != QETH_CARD_TYPE_UNKNOWN) {
+	if (!IS_OSD(card) && !IS_OSX(card)) {
 		rc = -EOPNOTSUPP;
 		dev_err(&card->gdev->dev, "Adapter does not "
 			"support QDIO data connection isolation\n");
@@ -546,9 +473,6 @@ static ssize_t qeth_dev_switch_attrs_show(struct device *dev,
 	struct qeth_switch_info sw_info;
 	int	rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
 	if (!qeth_card_hw_is_reachable(card))
 		return sprintf(buf, "n/a\n");
 
@@ -579,8 +503,6 @@ static ssize_t qeth_hw_trap_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	if (!card)
-		return -EINVAL;
 	if (card->info.hwtrap)
 		return snprintf(buf, 5, "arm\n");
 	else
@@ -593,9 +515,6 @@ static ssize_t qeth_hw_trap_store(struct device *dev,
 	struct qeth_card *card = dev_get_drvdata(dev);
 	int rc = 0;
 	int state = 0;
-
-	if (!card)
-		return -EINVAL;
 
 	mutex_lock(&card->conf_mutex);
 	if (qeth_card_hw_is_reachable(card))
@@ -631,27 +550,14 @@ static ssize_t qeth_hw_trap_store(struct device *dev,
 static DEVICE_ATTR(hw_trap, 0644, qeth_hw_trap_show,
 		   qeth_hw_trap_store);
 
-static ssize_t qeth_dev_blkt_show(char *buf, struct qeth_card *card, int value)
-{
-
-	if (!card)
-		return -EINVAL;
-
-	return sprintf(buf, "%i\n", value);
-}
-
 static ssize_t qeth_dev_blkt_store(struct qeth_card *card,
 		const char *buf, size_t count, int *value, int max_value)
 {
 	char *tmp;
 	int i, rc = 0;
 
-	if (!card)
-		return -EINVAL;
-
 	mutex_lock(&card->conf_mutex);
-	if ((card->state != CARD_STATE_DOWN) &&
-	    (card->state != CARD_STATE_RECOVER)) {
+	if (card->state != CARD_STATE_DOWN) {
 		rc = -EPERM;
 		goto out;
 	}
@@ -670,7 +576,7 @@ static ssize_t qeth_dev_blkt_total_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	return qeth_dev_blkt_show(buf, card, card->info.blkt.time_total);
+	return sprintf(buf, "%i\n", card->info.blkt.time_total);
 }
 
 static ssize_t qeth_dev_blkt_total_store(struct device *dev,
@@ -682,8 +588,6 @@ static ssize_t qeth_dev_blkt_total_store(struct device *dev,
 				   &card->info.blkt.time_total, 5000);
 }
 
-
-
 static DEVICE_ATTR(total, 0644, qeth_dev_blkt_total_show,
 		   qeth_dev_blkt_total_store);
 
@@ -692,7 +596,7 @@ static ssize_t qeth_dev_blkt_inter_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	return qeth_dev_blkt_show(buf, card, card->info.blkt.inter_packet);
+	return sprintf(buf, "%i\n", card->info.blkt.inter_packet);
 }
 
 static ssize_t qeth_dev_blkt_inter_store(struct device *dev,
@@ -712,8 +616,7 @@ static ssize_t qeth_dev_blkt_inter_jumbo_show(struct device *dev,
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
 
-	return qeth_dev_blkt_show(buf, card,
-				  card->info.blkt.inter_packet_jumbo);
+	return sprintf(buf, "%i\n", card->info.blkt.inter_packet_jumbo);
 }
 
 static ssize_t qeth_dev_blkt_inter_jumbo_store(struct device *dev,
@@ -734,10 +637,11 @@ static struct attribute *qeth_blkt_device_attrs[] = {
 	&dev_attr_inter_jumbo.attr,
 	NULL,
 };
-static struct attribute_group qeth_device_blkt_group = {
+const struct attribute_group qeth_device_blkt_group = {
 	.name = "blkt",
 	.attrs = qeth_blkt_device_attrs,
 };
+EXPORT_SYMBOL_GPL(qeth_device_blkt_group);
 
 static struct attribute *qeth_device_attrs[] = {
 	&dev_attr_state.attr,
@@ -757,9 +661,10 @@ static struct attribute *qeth_device_attrs[] = {
 	&dev_attr_switch_attrs.attr,
 	NULL,
 };
-static struct attribute_group qeth_device_attr_group = {
+const struct attribute_group qeth_device_attr_group = {
 	.attrs = qeth_device_attrs,
 };
+EXPORT_SYMBOL_GPL(qeth_device_attr_group);
 
 const struct attribute_group *qeth_generic_attr_groups[] = {
 	&qeth_device_attr_group,

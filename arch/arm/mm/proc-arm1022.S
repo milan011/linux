@@ -1,15 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  linux/arch/arm/mm/proc-arm1022.S: MMU functions for ARM1022E
  *
  *  Copyright (C) 2000 ARM Limited
  *  Copyright (C) 2000 Deep Blue Solutions Ltd.
  *  hacked for non-paged-MM by Hyok S. Choi, 2003.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  *
  * These are the low level assembler for performing cache and TLB
  * functions on the ARM1022E.
@@ -448,7 +443,7 @@ arm1022_crval:
 
 	.align
 
-	.section ".proc.info.init", #alloc, #execinstr
+	.section ".proc.info.init", "a"
 
 	.type	__arm1022_proc_info,#object
 __arm1022_proc_info:
@@ -462,7 +457,7 @@ __arm1022_proc_info:
 		PMD_BIT4 | \
 		PMD_SECT_AP_WRITE | \
 		PMD_SECT_AP_READ
-	b	__arm1022_setup
+	initfn	__arm1022_setup, __arm1022_proc_info
 	.long	cpu_arch_name
 	.long	cpu_elf_name
 	.long	HWCAP_SWP | HWCAP_HALF | HWCAP_THUMB | HWCAP_EDSP

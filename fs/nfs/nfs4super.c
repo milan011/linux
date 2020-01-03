@@ -1,14 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012 Bryan Schumaker <bjschuma@netapp.com>
  */
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/nfs_idmap.h>
 #include <linux/nfs4_mount.h>
 #include <linux/nfs_fs.h>
 #include "delegation.h"
 #include "internal.h"
 #include "nfs4_fs.h"
+#include "nfs4idmap.h"
 #include "dns_resolve.h"
 #include "pnfs.h"
 #include "nfs.h"
@@ -50,7 +51,7 @@ struct file_system_type nfs4_referral_fs_type = {
 
 static const struct super_operations nfs4_sops = {
 	.alloc_inode	= nfs_alloc_inode,
-	.destroy_inode	= nfs_destroy_inode,
+	.free_inode	= nfs_free_inode,
 	.write_inode	= nfs4_write_inode,
 	.drop_inode	= nfs_drop_inode,
 	.statfs		= nfs_statfs,
@@ -91,10 +92,11 @@ static void nfs4_evict_inode(struct inode *inode)
 {
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
+	/* If we are holding a delegation, return and free it */
+	nfs_inode_evict_delegation(inode);
+	/* Note that above delegreturn would trigger pnfs return-on-close */
 	pnfs_return_layout(inode);
 	pnfs_destroy_layout(NFS_I(inode));
-	/* If we are holding a delegation, return it! */
-	nfs_inode_return_delegation_noreclaim(inode);
 	/* First call standard NFS clear_inode() code */
 	nfs_clear_inode(inode);
 }

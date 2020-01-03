@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/signal_64.c
  *
  * Copyright (C) 2000, 2001  Paolo Alberelli
  * Copyright (C) 2003 - 2008  Paul Mundt
  * Copyright (C) 2004  Richard Curnow
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/rwsem.h>
 #include <linux/sched.h>
@@ -23,7 +20,7 @@
 #include <linux/stddef.h>
 #include <linux/tracehook.h>
 #include <asm/ucontext.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/cacheflush.h>
 #include <asm/fpu.h>
@@ -262,7 +259,7 @@ asmlinkage int sys_sigreturn(unsigned long r2, unsigned long r3,
 	/* Always make any pending restarted system calls return -EINTR */
 	current->restart_block.fn = do_no_restart_syscall;
 
-	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		goto badframe;
 
 	if (__get_user(set.sig[0], &frame->sc.oldmask)
@@ -280,7 +277,7 @@ asmlinkage int sys_sigreturn(unsigned long r2, unsigned long r3,
 	return (int) ret;
 
 badframe:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 	return 0;
 }
 
@@ -296,7 +293,7 @@ asmlinkage int sys_rt_sigreturn(unsigned long r2, unsigned long r3,
 	/* Always make any pending restarted system calls return -EINTR */
 	current->restart_block.fn = do_no_restart_syscall;
 
-	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		goto badframe;
 
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
@@ -314,7 +311,7 @@ asmlinkage int sys_rt_sigreturn(unsigned long r2, unsigned long r3,
 	return (int) ret;
 
 badframe:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 	return 0;
 }
 
@@ -382,14 +379,8 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 
 	frame = get_sigframe(&ksig->ka, regs->regs[REG_SP], sizeof(*frame));
 
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		return -EFAULT;
-
-	signal = current_thread_info()->exec_domain
-		&& current_thread_info()->exec_domain->signal_invmap
-		&& sig < 32
-		? current_thread_info()->exec_domain->signal_invmap[sig]
-		: sig;
 
 	err |= setup_sigcontext(&frame->sc, regs, set->sig[0]);
 
@@ -441,7 +432,7 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 	 * All edited pointers are subject to NEFF.
 	 */
 	regs->regs[REG_SP] = neff_sign_extend((unsigned long)frame);
-	regs->regs[REG_ARG1] = signal; /* Arg for signal handler */
+	regs->regs[REG_ARG1] = sig; /* Arg for signal handler */
 
         /* FIXME:
            The glibc profiling support for SH-5 needs to be passed a sigcontext
@@ -457,11 +448,9 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs
 
 	regs->pc = neff_sign_extend((unsigned long)ksig->ka.sa.sa_handler);
 
-	set_fs(USER_DS);
-
 	/* Broken %016Lx */
 	pr_debug("SIG deliver (#%d,%s:%d): sp=%p pc=%08Lx%08Lx link=%08Lx%08Lx\n",
-		 signal, current->comm, current->pid, frame,
+		 sig, current->comm, current->pid, frame,
 		 regs->pc >> 32, regs->pc & 0xffffffff,
 		 DEREF_REG_PR >> 32, DEREF_REG_PR & 0xffffffff);
 
@@ -473,18 +462,11 @@ static int setup_rt_frame(struct ksignal *kig, sigset_t *set,
 {
 	struct rt_sigframe __user *frame;
 	int err = 0, sig = ksig->sig;
-	int signal;
 
 	frame = get_sigframe(&ksig->ka, regs->regs[REG_SP], sizeof(*frame));
 
-	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+	if (!access_ok(frame, sizeof(*frame)))
 		return -EFAULT;
-
-	signal = current_thread_info()->exec_domain
-		&& current_thread_info()->exec_domain->signal_invmap
-		&& sig < 32
-		? current_thread_info()->exec_domain->signal_invmap[sig]
-		: sig;
 
 	err |= __put_user(&frame->info, &frame->pinfo);
 	err |= __put_user(&frame->uc, &frame->puc);
@@ -542,15 +524,13 @@ static int setup_rt_frame(struct ksignal *kig, sigset_t *set,
 	 * All edited pointers are subject to NEFF.
 	 */
 	regs->regs[REG_SP] = neff_sign_extend((unsigned long)frame);
-	regs->regs[REG_ARG1] = signal; /* Arg for signal handler */
+	regs->regs[REG_ARG1] = sig; /* Arg for signal handler */
 	regs->regs[REG_ARG2] = (unsigned long long)(unsigned long)(signed long)&frame->info;
 	regs->regs[REG_ARG3] = (unsigned long long)(unsigned long)(signed long)&frame->uc.uc_mcontext;
 	regs->pc = neff_sign_extend((unsigned long)ksig->ka.sa.sa_handler);
 
-	set_fs(USER_DS);
-
 	pr_debug("SIG deliver (#%d,%s:%d): sp=%p pc=%08Lx%08Lx link=%08Lx%08Lx\n",
-		 signal, current->comm, current->pid, frame,
+		 sig, current->comm, current->pid, frame,
 		 regs->pc >> 32, regs->pc & 0xffffffff,
 		 DEREF_REG_PR >> 32, DEREF_REG_PR & 0xffffffff);
 

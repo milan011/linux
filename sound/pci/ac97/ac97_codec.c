@@ -1,25 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Universal interface for Audio Codec '97
  *
  *  For more details look to AC '97 component specification revision 2.2
  *  by Intel Corporation (http://developer.intel.com).
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/delay.h>
@@ -177,6 +162,7 @@ static const struct ac97_codec_id snd_ac97_codec_ids[] = {
 { 0x54524123, 0xffffffff, "TR28602",		NULL,		NULL }, // only guess --jk [TR28023 = eMicro EM28023 (new CT1297)]
 { 0x54584e03, 0xffffffff, "TLV320AIC27",	NULL,		NULL },
 { 0x54584e20, 0xffffffff, "TLC320AD9xC",	NULL,		NULL },
+{ 0x56494120, 0xfffffff0, "VIA1613",		patch_vt1613,	NULL },
 { 0x56494161, 0xffffffff, "VIA1612A",		NULL,		NULL }, // modified ICE1232 with S/PDIF
 { 0x56494170, 0xffffffff, "VIA1617A",		patch_vt1617a,	NULL }, // modified VT1616 with S/PDIF
 { 0x56494182, 0xffffffff, "VIA1618",		patch_vt1618,   NULL },
@@ -610,11 +596,6 @@ static int snd_ac97_put_volsw(struct snd_kcontrol *kcontrol,
 	return err;
 }
 
-static const struct snd_kcontrol_new snd_ac97_controls_master_mono[2] = {
-AC97_SINGLE("Master Mono Playback Switch", AC97_MASTER_MONO, 15, 1, 1),
-AC97_SINGLE("Master Mono Playback Volume", AC97_MASTER_MONO, 0, 31, 1)
-};
-
 static const struct snd_kcontrol_new snd_ac97_controls_tone[2] = {
 AC97_SINGLE("Tone Control - Bass", AC97_MASTER_TONE, 8, 15, 1),
 AC97_SINGLE("Tone Control - Treble", AC97_MASTER_TONE, 0, 15, 1)
@@ -823,7 +804,7 @@ static int snd_ac97_put_spsa(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 {
 	struct snd_ac97 *ac97 = snd_kcontrol_chip(kcontrol);
 	int reg = kcontrol->private_value & 0xff;
-	int shift = (kcontrol->private_value >> 8) & 0xff;
+	int shift = (kcontrol->private_value >> 8) & 0x0f;
 	int mask = (kcontrol->private_value >> 16) & 0xff;
 	// int invert = (kcontrol->private_value >> 24) & 0xff;
 	unsigned short value, old, new;
@@ -1906,7 +1887,7 @@ static int ac97_reset_wait(struct snd_ac97 *ac97, int timeout, int with_modem)
  * write).  The other callbacks, wait and reset, are not mandatory.
  * 
  * The clock is set to 48000.  If another clock is needed, set
- * (*rbus)->clock manually.
+ * ``(*rbus)->clock`` manually.
  *
  * The AC97 bus instance is registered as a low-level device, so you don't
  * have to release it manually.
@@ -2901,7 +2882,8 @@ static int apply_quirk_str(struct snd_ac97 *ac97, const char *typestr)
  * Return: Zero if successful, or a negative error code on failure.
  */
 
-int snd_ac97_tune_hardware(struct snd_ac97 *ac97, struct ac97_quirk *quirk, const char *override)
+int snd_ac97_tune_hardware(struct snd_ac97 *ac97,
+			   const struct ac97_quirk *quirk, const char *override)
 {
 	int result;
 
@@ -2939,19 +2921,3 @@ int snd_ac97_tune_hardware(struct snd_ac97 *ac97, struct ac97_quirk *quirk, cons
 }
 
 EXPORT_SYMBOL(snd_ac97_tune_hardware);
-
-/*
- *  INIT part
- */
-
-static int __init alsa_ac97_init(void)
-{
-	return 0;
-}
-
-static void __exit alsa_ac97_exit(void)
-{
-}
-
-module_init(alsa_ac97_init)
-module_exit(alsa_ac97_exit)

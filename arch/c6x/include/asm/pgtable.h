@@ -1,17 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  Port on Texas Instruments TMS320C6x architecture
  *
  *  Copyright (C) 2004, 2009, 2010 Texas Instruments Incorporated
  *  Author: Aurelien Jacquiot (aurelien.jacquiot@jaluna.com)
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 #ifndef _ASM_C6X_PGTABLE_H
 #define _ASM_C6X_PGTABLE_H
 
-#include <asm-generic/4level-fixup.h>
+#include <asm-generic/pgtable-nopud.h>
 
 #include <asm/setup.h>
 #include <asm/page.h>
@@ -63,9 +60,9 @@ extern unsigned long empty_zero_page;
 #define swapper_pg_dir ((pgd_t *) 0)
 
 /*
- * No page table caches to initialise
+ * c6x is !MMU, so define the simpliest implementation
  */
-#define pgtable_cache_init()   do { } while (0)
+#define pgprot_writecombine pgprot_noncached
 
 #include <asm-generic/pgtable.h>
 

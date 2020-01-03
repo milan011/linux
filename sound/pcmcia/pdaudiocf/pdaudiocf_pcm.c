@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Sound Core PDAudioCF soundcards
  *
  * PCM part
  *
  * Copyright (c) 2003 by Jaroslav Kysela <perex@perex.cz>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/delay.h>
@@ -102,8 +89,7 @@ static int pdacf_pcm_trigger(struct snd_pcm_substream *subs, int cmd)
 static int pdacf_pcm_hw_params(struct snd_pcm_substream *subs,
 				     struct snd_pcm_hw_params *hw_params)
 {
-	return snd_pcm_lib_alloc_vmalloc_32_buffer
-					(subs, params_buffer_bytes(hw_params));
+	return snd_pcm_lib_malloc_pages(subs, params_buffer_bytes(hw_params));
 }
 
 /*
@@ -111,7 +97,7 @@ static int pdacf_pcm_hw_params(struct snd_pcm_substream *subs,
  */
 static int pdacf_pcm_hw_free(struct snd_pcm_substream *subs)
 {
-	return snd_pcm_lib_free_vmalloc_buffer(subs);
+	return snd_pcm_lib_free_pages(subs);
 }
 
 /*
@@ -193,7 +179,7 @@ static int pdacf_pcm_prepare(struct snd_pcm_substream *subs)
  * capture hw information
  */
 
-static struct snd_pcm_hardware pdacf_pcm_capture_hw = {
+static const struct snd_pcm_hardware pdacf_pcm_capture_hw = {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME |
 				 SNDRV_PCM_INFO_MMAP_VALID |
@@ -266,7 +252,7 @@ static snd_pcm_uframes_t pdacf_pcm_capture_pointer(struct snd_pcm_substream *sub
 /*
  * operators for PCM capture
  */
-static struct snd_pcm_ops pdacf_pcm_capture_ops = {
+static const struct snd_pcm_ops pdacf_pcm_capture_ops = {
 	.open =		pdacf_pcm_capture_open,
 	.close =	pdacf_pcm_capture_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -275,8 +261,6 @@ static struct snd_pcm_ops pdacf_pcm_capture_ops = {
 	.prepare =	pdacf_pcm_prepare,
 	.trigger =	pdacf_pcm_trigger,
 	.pointer =	pdacf_pcm_capture_pointer,
-	.page =		snd_pcm_lib_get_vmalloc_page,
-	.mmap =		snd_pcm_lib_mmap_vmalloc,
 };
 
 
@@ -293,6 +277,9 @@ int snd_pdacf_pcm_new(struct snd_pdacf *chip)
 		return err;
 		
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &pdacf_pcm_capture_ops);
+	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_VMALLOC,
+					      snd_dma_continuous_data(GFP_KERNEL | GFP_DMA32),
+					      0, 0);
 
 	pcm->private_data = chip;
 	pcm->info_flags = 0;

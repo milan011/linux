@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Advanced Linux Sound Architecture
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/init.h>
@@ -74,7 +59,6 @@ void snd_request_card(int card)
 		return;
 	request_module("snd-card-%i", card);
 }
-
 EXPORT_SYMBOL(snd_request_card);
 
 static void snd_request_other(int minor)
@@ -124,7 +108,6 @@ void *snd_lookup_minor_data(unsigned int minor, int type)
 	mutex_unlock(&sound_mutex);
 	return private_data;
 }
-
 EXPORT_SYMBOL(snd_lookup_minor_data);
 
 #ifdef CONFIG_MODULES
@@ -136,8 +119,11 @@ static struct snd_minor *autoload_device(unsigned int minor)
 	if (dev == SNDRV_MINOR_CONTROL) {
 		/* /dev/aloadC? */
 		int card = SNDRV_MINOR_CARD(minor);
-		if (snd_cards[card] == NULL)
+		struct snd_card *ref = snd_card_ref(card);
+		if (!ref)
 			snd_request_card(card);
+		else
+			snd_card_unref(ref);
 	} else if (dev == SNDRV_MINOR_GLOBAL) {
 		/* /dev/aloadSEQ */
 		snd_request_other(minor);
@@ -186,7 +172,7 @@ static const struct file_operations snd_fops =
 };
 
 #ifdef CONFIG_SND_DYNAMIC_MINORS
-static int snd_find_free_minor(int type)
+static int snd_find_free_minor(int type, struct snd_card *card, int dev)
 {
 	int minor;
 
@@ -209,7 +195,7 @@ static int snd_find_free_minor(int type)
 	return -EBUSY;
 }
 #else
-static int snd_kernel_minor(int type, struct snd_card *card, int dev)
+static int snd_find_free_minor(int type, struct snd_card *card, int dev)
 {
 	int minor;
 
@@ -237,6 +223,8 @@ static int snd_kernel_minor(int type, struct snd_card *card, int dev)
 	}
 	if (snd_BUG_ON(minor < 0 || minor >= SNDRV_OS_MINORS))
 		return -EINVAL;
+	if (snd_minors[minor])
+		return -EBUSY;
 	return minor;
 }
 #endif
@@ -276,13 +264,7 @@ int snd_register_device(int type, struct snd_card *card, int dev,
 	preg->private_data = private_data;
 	preg->card_ptr = card;
 	mutex_lock(&sound_mutex);
-#ifdef CONFIG_SND_DYNAMIC_MINORS
-	minor = snd_find_free_minor(type);
-#else
-	minor = snd_kernel_minor(type, card, dev);
-	if (minor >= 0 && snd_minors[minor])
-		minor = -EBUSY;
-#endif
+	minor = snd_find_free_minor(type, card, dev);
 	if (minor < 0) {
 		err = minor;
 		goto error;
@@ -334,13 +316,10 @@ int snd_unregister_device(struct device *dev)
 }
 EXPORT_SYMBOL(snd_unregister_device);
 
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 /*
  *  INFO PART
  */
-
-static struct snd_info_entry *snd_minor_info_entry;
-
 static const char *snd_device_type_name(int type)
 {
 	switch (type) {
@@ -393,23 +372,12 @@ int __init snd_minor_info_init(void)
 	struct snd_info_entry *entry;
 
 	entry = snd_info_create_module_entry(THIS_MODULE, "devices", NULL);
-	if (entry) {
-		entry->c.text.read = snd_minor_info_read;
-		if (snd_info_register(entry) < 0) {
-			snd_info_free_entry(entry);
-			entry = NULL;
-		}
-	}
-	snd_minor_info_entry = entry;
-	return 0;
+	if (!entry)
+		return -ENOMEM;
+	entry->c.text.read = snd_minor_info_read;
+	return snd_info_register(entry); /* freed in error path */
 }
-
-int __exit snd_minor_info_done(void)
-{
-	snd_info_free_entry(snd_minor_info_entry);
-	return 0;
-}
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */
 
 /*
  *  INIT PART
@@ -427,7 +395,6 @@ static int __init alsa_sound_init(void)
 		unregister_chrdev(major, "alsa");
 		return -ENOMEM;
 	}
-	snd_info_minor_register();
 #ifndef MODULE
 	pr_info("Advanced Linux Sound Architecture Driver Initialized.\n");
 #endif
@@ -436,7 +403,6 @@ static int __init alsa_sound_init(void)
 
 static void __exit alsa_sound_exit(void)
 {
-	snd_info_minor_unregister();
 	snd_info_done();
 	unregister_chrdev(major, "alsa");
 }

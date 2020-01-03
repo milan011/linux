@@ -1,8 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) STMicroelectronics 2009
  * Copyright (C) ST-Ericsson SA 2010
  *
- * License Terms: GNU General Public License v2
  * Author: Kumar Sanghvi <kumar.sanghvi@stericsson.com>
  *
  * PRCMU f/w APIs
@@ -489,7 +489,7 @@ struct prcmu_auto_pm_config {
 
 #ifdef CONFIG_MFD_DB8500_PRCMU
 
-void db8500_prcmu_early_init(u32 phy_base, u32 size);
+void db8500_prcmu_early_init(void);
 int prcmu_set_rc_a2p(enum romcode_write);
 enum romcode_read prcmu_get_rc_p2a(void);
 enum ap_pwrst prcmu_get_xp70_current_state(void);
@@ -538,7 +538,6 @@ int db8500_prcmu_get_arm_opp(void);
 int db8500_prcmu_set_ape_opp(u8 opp);
 int db8500_prcmu_get_ape_opp(void);
 int db8500_prcmu_request_ape_opp_100_voltage(bool enable);
-int db8500_prcmu_set_ddr_opp(u8 opp);
 int db8500_prcmu_get_ddr_opp(void);
 
 u32 db8500_prcmu_read(unsigned int reg);
@@ -547,7 +546,7 @@ void db8500_prcmu_write_masked(unsigned int reg, u32 mask, u32 value);
 
 #else /* !CONFIG_MFD_DB8500_PRCMU */
 
-static inline void db8500_prcmu_early_init(u32 phy_base, u32 size) {}
+static inline void db8500_prcmu_early_init(void) {}
 
 static inline int prcmu_set_rc_a2p(enum romcode_write code)
 {
@@ -590,11 +589,6 @@ static inline int db8500_prcmu_request_ape_opp_100_voltage(bool enable)
 }
 
 static inline int prcmu_release_usb_wakeup_state(void)
-{
-	return 0;
-}
-
-static inline int db8500_prcmu_set_ddr_opp(u8 opp)
 {
 	return 0;
 }

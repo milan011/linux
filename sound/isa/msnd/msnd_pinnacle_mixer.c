@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /***************************************************************************
 			  msnd_pinnacle_mixer.c  -  description
 			     -------------------
@@ -8,10 +9,6 @@
 
 /***************************************************************************
  *							      		   *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.				   *
  *									   *
  ***************************************************************************/
 
@@ -306,11 +303,12 @@ int snd_msndmix_new(struct snd_card *card)
 	spin_lock_init(&chip->mixer_lock);
 	strcpy(card->mixername, "MSND Pinnacle Mixer");
 
-	for (idx = 0; idx < ARRAY_SIZE(snd_msnd_controls); idx++)
+	for (idx = 0; idx < ARRAY_SIZE(snd_msnd_controls); idx++) {
 		err = snd_ctl_add(card,
 				  snd_ctl_new1(snd_msnd_controls + idx, chip));
 		if (err < 0)
 			return err;
+	}
 
 	return 0;
 }
